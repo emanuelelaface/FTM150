@@ -13,7 +13,7 @@ The map is intentionally conservative: fields that are not understood are docume
 | 1 | Microphone | Analog | Microphone audio. Not part of the UART data stream. |
 | 2 | AUDIO GND | Audio Ground | Common reference for audio. |
 | 3 | Speaker | Analog | Speaker/RX audio. Captured by a USB sound card in this project. |
-| 4 | UNKNOWN | Unknown | Not mapped yet. |
+| 4 | +3.3V | Power | Not used (?). |
 | 5 | +13 V | Power | Radio supply. Do not connect to TTL or audio inputs. |
 | 6 | Data transmission: front panel → radio body | 3.3 V TTL UART | Panel command stream, called panel→body or TX frame in this document. |
 | 7 | Data transmission: radio body → front panel | 3.3 V TTL UART | Display/status stream, called body→panel or RX frame in this document. |
