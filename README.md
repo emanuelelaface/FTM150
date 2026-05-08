@@ -1,5 +1,9 @@
 # Yaesu FTM-150 Remote Panel Controller
 
+<p align="center">
+  <img src="https://github.com/emanuelelaface/FTM150/blob/main/images/screenshot1.png" alt="Schematic" style="width: 100%;">
+</p>
+
 Experimental Python controller and web front panel for the **Yaesu FTM-150** transceiver.
 
 The application emulates the detachable front-panel data link, continuously sends Yaesu panel-to-body idle frames, injects key/knob/microphone events, decodes the body-to-panel display stream, and optionally exposes a browser-based control surface with RX/TX audio through a USB sound card.
