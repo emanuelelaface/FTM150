@@ -5876,6 +5876,12 @@ def _setup_value_from_menu_frame(num: Optional[int], menu_frame: Optional[bytes]
     if num == 29:
         return _decode_rear_sp_out_from_menu29_frame(menu_frame)
 
+    # Menu 30 FRONT SP MUTE uses declared compact text.  AUTO MUTE contains
+    # 0x64 as a visible space; the generic decoder treats 0x64 as padding and
+    # would only read AUTO, causing UNKNOWN/raw to be displayed.
+    if num == 30:
+        return _decode_front_sp_mute_from_menu30_frame(menu_frame)
+
     # Menu 34 TONE SQL FREQ is a CTCSS tone value learned from F3 20 frames.
     if num == 34:
         return _decode_tone_sql_freq_from_menu34_frame(menu_frame)
@@ -6298,6 +6304,27 @@ def _decode_home_ch_from_menu15_frame(menu_frame: bytes) -> Optional[str]:
         return None
     known = {str(v).upper(): str(v) for v in SETUP_CHOICE_LISTS.get(15, [])}
     return known.get(text.upper())
+
+
+
+def _decode_front_sp_mute_from_menu30_frame(menu_frame: bytes) -> Optional[str]:
+    """Decode Setup menu 30 FRONT SP MUTE from its declared LCD value field.
+
+    Learned/observed values:
+      CONTINUE  -> compact text without embedded spaces
+      AUTO MUTE -> compact text with 0x64 as a visible space
+
+    The generic _decode_lcd_choice_text() stops at 0x64 because that byte is
+    padding for many older learned values.  For menu 30 it is part of the
+    visible value, so use the declared length at +0027 and validate against the
+    known choices.
+    """
+    text = _decode_lcd_declared_value_text(menu_frame, start=28, length_off=27, max_len=12)
+    if text is None:
+        return None
+    norm = re.sub(r"\s+", " ", text).strip().upper()
+    known = {str(v).upper(): str(v) for v in SETUP_CHOICE_LISTS.get(30, [])}
+    return known.get(norm)
 
 
 def _decode_pr_frequency_from_menu37_frame(menu_frame: bytes) -> Optional[str]:
