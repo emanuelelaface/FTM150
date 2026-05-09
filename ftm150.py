@@ -75,12 +75,15 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import base64
 import re
 import shlex
 import socket
+import struct
 import sys
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -88,6 +91,11 @@ try:
     import serial
 except ModuleNotFoundError:
     serial = None  # pyserial required unless --demo is used
+
+try:
+    import pigpio  # type: ignore
+except ModuleNotFoundError:
+    pigpio = None  # required only for GPIO power-on replay
 
 BAUD = 500000
 TX_FRAME_LEN = 210
@@ -600,6 +608,16 @@ class BodyRx:
     def snapshot(self) -> Tuple[Optional[bytes], Optional[float], int, int, int]:
         with self.lock:
             return self.latest_data_frame, self.latest_data_at, self.frames_seen, self.data_frames_seen, self.sync_losses
+
+    def activity_snapshot(self) -> Tuple[Optional[float], int]:
+        """Return timestamp/count of the latest valid RX frame of any kind.
+
+        This is intentionally based on latest_frame_at, not latest_data_at: menu
+        and alternate display frames also prove that the radio body is alive.
+        The web UI power state is derived from this watchdog.
+        """
+        with self.lock:
+            return self.latest_frame_at, self.frames_seen
 
     def counters(self) -> Dict[str, int]:
         with self.lock:
@@ -2815,6 +2833,18 @@ WEB_HTML = r'''<!doctype html>
   .toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#111; border:1px solid #555; color:#eee; padding:10px 14px; border-radius:12px; opacity:0; transition:.2s; pointer-events:none; }
   .toast.show { opacity:1; }
   @media (max-width:900px) { .radio{padding:14px}.top-buttons{margin:0 20px 12px;gap:8px}.face{grid-template-columns:1fr}.side{grid-row:auto;grid-template-columns:1fr 1fr;grid-template-rows:auto}.left-side{order:2}.right-side{order:3}.center{order:1}.web-controls{grid-template-columns:1fr}.pad{width:auto}.audio-stack{height:auto}.mic-grid{grid-template-columns:repeat(4,1fr)} }
+
+  body.radio-off .lcd { background:#8b8b8b !important; box-shadow:inset 0 0 0 4px rgba(80,80,80,.55), inset 0 0 42px rgba(0,0,0,.22) !important; }
+  body.radio-off .lcd * { color:#424242 !important; border-color:rgba(70,70,70,.55) !important; text-shadow:none !important; }
+  body.radio-off .lcd .seg.on, body.radio-off .lcd .meter-fill { background:#424242 !important; }
+  body.radio-off #normalScreen, body.radio-off #menuScreen, body.radio-off #muteOverlay, body.radio-off #dialogOverlay { visibility:hidden !important; }
+  body.radio-off .lcd::after { content:"POWER OFF"; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:clamp(34px,6vw,72px); font-weight:950; letter-spacing:2px; color:#222; z-index:20; background:rgba(160,160,160,.28); }
+  body.powering-on .lcd::after { content:"POWERING ON"; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:clamp(30px,5vw,62px); font-weight:950; letter-spacing:1px; color:#222; z-index:20; background:rgba(160,160,160,.40); }
+  body.radio-off .radio button:not(#powerBtn), body.radio-off .knob, body.radio-off .mic-grid, body.radio-off .web-controls, body.radio-off .audio-stack { pointer-events:none !important; opacity:.38; filter:grayscale(1); }
+  body.radio-off #powerBtn { pointer-events:auto !important; opacity:1 !important; filter:none !important; }
+  body.powering-on #powerBtn { opacity:.7 !important; }
+  button:disabled { opacity:.38; cursor:not-allowed; }
+
 </style>
 </head>
 <body>
@@ -2883,6 +2913,8 @@ const mic=['mic_a','mic_b','mic_c','mic_d','mic_1','mic_2','mic_3','mic_p1','mic
 const labels={mic_star:'*',mic_hash:'#',mic_up:'UP',mic_down:'DOWN',mic_mute:'MUTE',mic_a:'A',mic_b:'B',mic_c:'C',mic_d:'D',mic_p1:'P1',mic_p2:'P2',mic_p3:'P3',mic_p4:'P4'};
 let audioCtl=null;
 let txCtl=null;
+let radioPowered=false;
+let powerBusy=false;
 let displaySettings={lcd_dimmer:'MID',lcd_contrast:5,s_meter_symbol:'BARS',backlight_color:'AMBER'};
 let menuLast=null;
 function activeMenuForRender(menu){ return menu; }
@@ -3125,7 +3157,7 @@ function setupAudioControls(){
 }
 setupAudioControls();
 setupTxControls();
-setupMomentaryButton('powerBtn','power');
+setupPowerButton('powerBtn','power');
 setupFButton('fBtn','f',200,700,450);
 setupFButton('sdxBtn','sdx',200,700,450);
 setupFButton('bandBtn','band',200,700,450);
@@ -3141,7 +3173,7 @@ setupKnobPress('blPressBtn','bl_press');
 setupKnobPress('brPressKnob','br_press');
 setupKnobPress('brPressBtn','br_press');
 function toast(msg){const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),900);}
-async function sendCmd(command,duration){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,duration})}); const j=await r.json().catch(()=>({ok:false,error:'bad json'})); toast(j.ok?command:(j.error||'error'));}
+async function sendCmd(command,duration){if(!radioPowered){toast('radio spenta'); return;} const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,duration})}); const j=await r.json().catch(()=>({ok:false,error:'bad json'})); toast(j.ok?command:(j.error||'error'));}
 async function saveAction(action){const label='menu25'; const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,label})}); const j=await r.json().catch(()=>({ok:false,error:'bad json'})); toast(j.ok?(j.message||('save '+action)):(j.error||'save error')); updateSaveState(j.save||{});}
 function updateSaveState(save){const st=document.getElementById('saveState'); const a=!!(save&&save.active); const b1=document.getElementById('saveStartBtn'); const b2=document.getElementById('saveStopBtn'); if(b1) b1.classList.toggle('active',a); if(b2) b2.classList.toggle('active',a); if(st){ if(a){const sec=save.elapsed_s==null?'':(' '+Number(save.elapsed_s).toFixed(0)+'s'); st.textContent='REC '+(save.screens||0)+' screens / '+(save.commands||0)+' cmd'+sec;} else {st.textContent=save.zip_path?('saved '+save.zip_path):'save off';}}}
 async function sendDialCmd(command){
@@ -3153,6 +3185,7 @@ async function menuValueClick(){ await sendCmd('br_press'); }
 
 const heldCmds=new Set();
 async function holdCmd(command){
+  if(!radioPowered){toast('radio spenta'); return;}
   if(heldCmds.has(command)) return;
   heldCmds.add(command);
   try{
@@ -3184,6 +3217,83 @@ function setupMomentaryButton(id,command){
   b.addEventListener('keydown',e=>{if((e.key===' '||e.key==='Enter')&&!down){start(e);}});
   b.addEventListener('keyup',e=>{if(e.key===' '||e.key==='Enter'){stop(e);}});
 } 
+
+function applyPowerState(j){
+  radioPowered=!!(j&&j.radio_powered);
+  powerBusy=!!(j&&j.powering_on);
+  document.body.classList.toggle('radio-off',!radioPowered);
+  document.body.classList.toggle('powering-on',powerBusy);
+  document.querySelectorAll('button').forEach(btn=>{
+    if(btn.id==='powerBtn'){ btn.disabled=powerBusy; return; }
+    btn.disabled=!radioPowered || powerBusy;
+  });
+  document.querySelectorAll('input,select,textarea').forEach(el=>{ el.disabled=!radioPowered || powerBusy; });
+}
+async function powerStartFromUi(){
+  if(powerBusy) return;
+  powerBusy=true;
+  applyPowerState({radio_powered:false,powering_on:true});
+  toast('accensione...');
+  try{
+    const r=await fetch('/api/power_start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const j=await r.json().catch(()=>({ok:false,error:'bad json'}));
+    toast(j.ok?(j.message||'sequenza accensione inviata'):(j.error||'errore accensione'));
+  }catch(e){
+    toast('errore accensione');
+  }finally{
+    powerBusy=false;
+    try{ await poll(); }catch(_e){}
+  }
+}
+function setupPowerButton(id,command){
+  const b=document.getElementById(id);
+  if(!b) return;
+  let down=false, downAt=0, timer=null, startupSent=false;
+  const thresholdMs=850;
+  const clearTimer=()=>{ if(timer){clearTimeout(timer); timer=null;} };
+  const start=(e)=>{
+    e.preventDefault();
+    if(down || powerBusy) return;
+    down=true; startupSent=false; downAt=performance.now();
+    b.classList.add('holding');
+    try{b.setPointerCapture&&b.setPointerCapture(e.pointerId);}catch(_e){}
+    if(!radioPowered){
+      timer=setTimeout(()=>{
+        if(down && !startupSent){ startupSent=true; powerStartFromUi(); }
+      },thresholdMs);
+    }else{
+      holdCmd(command);
+    }
+  };
+  const stop=(e)=>{
+    if(!down) return;
+    if(e) e.preventDefault();
+    const dt=performance.now()-downAt;
+    down=false; b.classList.remove('holding'); clearTimer();
+    if(startupSent){
+      return;
+    }
+    if(!radioPowered){
+      toast('tieni premuto POWER');
+      return;
+    }
+    releaseCmd(command);
+    if(dt>=thresholdMs){
+      // Il long-press reale spegne la radio. Lo stato OFF ora viene deciso
+      // dal watchdog RX: quando i frame smettono di arrivare, la UI diventa
+      // grigia e S torna LOW automaticamente.
+      toast('attendo stop RX...');
+      setTimeout(async()=>{ try{ await poll(); }catch(_e){} },1200);
+    }
+  };
+  b.addEventListener('pointerdown',start);
+  b.addEventListener('pointerup',stop);
+  b.addEventListener('pointercancel',stop);
+  b.addEventListener('lostpointercapture',stop);
+  b.addEventListener('contextmenu',e=>e.preventDefault());
+  b.addEventListener('keydown',e=>{if((e.key===' '||e.key==='Enter')&&!down){start(e);}});
+  b.addEventListener('keyup',e=>{if(e.key===' '||e.key==='Enter'){stop(e);}});
+}
 
 function releaseAllHeld(){
   document.querySelectorAll('.holding').forEach(el=>el.classList.remove('holding'));
@@ -3348,6 +3458,7 @@ function updateSide(prefix,data){document.getElementById(prefix+'tag').textConte
 async function poll(){try{
   const r=await fetch('/api/state');
   const j=await r.json();
+  applyPowerState(j);
   applyDisplaySettings(j.display_settings||{});
   updateSide('l',j.left);
   updateSide('r',j.right);
@@ -3370,6 +3481,7 @@ async function poll(){try{
   if(mo){ mo.textContent=ovText || 'MUTE'; mo.classList.toggle('show',!!ovText); }
   renderMenu(activeMenuForRender(j.menu||{}));
   let st=[];
+  if(!j.radio_powered){ st.push(j.powering_on?'POWERING ON':'POWER OFF'); }
   st.push(j.demo?'DEMO':'RX age '+(j.age_s??0).toFixed(2)+'s');
   if(j.activity){
     let sides=[];
@@ -8239,8 +8351,333 @@ def _strict_raw_menu_state_from_frame(frame: Optional[bytes]) -> dict:
         "lines": lines or ["unknown F3 display"],
     }
 
+
+
+# ---------------------------------------------------------------------------
+# GPIO CH2/pin6 power-on replay, embedded from the validated v9-hiz script.
+# ---------------------------------------------------------------------------
+START_LEVEL = 1
+EVENT_COUNT = 44474
+DURATION_US = 1877874
+SOURCE_START_MS = -9.853615151209056
+THRESHOLD_V = 1.65
+TAIL_START_INDEX = 7436      # delay lungo HIGH da 226.060 ms prima della coda continua
+TAIL_EDGE_INDEX = 7437       # qui inizierebbe la coda continua, con un fronte HIGH->LOW
+TAIL_EDGE_US = 1452096       # tempo dal primo LOW->HIGH fino alla coda continua
+CRITICAL_END_US = 1452096    # default: riproduce esatto fino a qui e lascia la linea HIGH
+_DELAYS_Z64 = """
+eNrt3U9OE1EcwPGZFijljygXkBBCkLBwoTslhiggcaHGROM1vII77+HOjQchBIkXYO/KAzjoTDJpqJQU2vm9+SwmHykUSIl835t5
+vDnfWcjyLPt79IqjWxwLxdEpH5sv7dScK4735dv15+W153TKozfk+V//8/zqY2drn6d6bGbI5/tcHI9fZdmXb3l2t/y41fL9V1kd
+d0b8+EHnaq/ZZW8vlN/PzAjfx3zt9VvljTr4c65+HkteH5IN8tf3TMeoYyTD+vSNjlHHSMZ1X8eoYyQDu6tj1DGSgX2hY9QxkuZj
+OqZjJOn6mI7pGEmaj1HHSLo+pmPUMZLmYzqmYyTZgutj9d+R83qmZyQZdF6mZ3pGkilcL9MzPSPJaczPVnVMx7w+JANfN9MxHfP6
+kDQf0zEdi+G97N99AMnUjfr/dOlTV8eoYyTD+rtjPkYdIxnXza6OUcdIxnVdx6hjJCOvV9Qx6hjJwB7pGHWMZGCPrfOgjpEM7Lb5
+GHWMpHUeOqZjJOn6mI7pGEle0z0ds3/REPPS5dLqWMzs30P7IbE5nlnnQfMxkoG1nwd1jGRkN3SMOkYysPbzoI6RjOxzHaOOkQzs
+qXUe1DGSgd0xH6OOkQys/TyoYyTt56FjOkaS1nnomI6R5HU9sc6DOkYysFvmY9QxkoG1LxV1jKTrYzqmYySpYzqmYyTpvi3UMZLW
+eegYdYyk+7bomI6RTNsm3E/8oPjHSuHsBL7exddYLI68fDsvH7uwX3u8Xz7eveLzVc/rZe4LfxvmtY5VP4uqY+5TT7IpHpqP0XyM
+ZGDt50EdI2mdh47pGEla56FjOkaS/g6aOkayTe7rGHWMZGB/WudBHSNpnYeO6RhJTsU1HaOOkfR30DqmYyRpnYeO6RhJWudBHSPp
+76B1jDpGMoTrOkYdIxnYDw3s2NLA+3RMx0hymI90bCzHub+XjpFkmus8zMd0jGyiKY9b7eehYzpGktYrTrNj44yzUh1v6RhJ+3mY
+j+kY2ezzfc77uf+YjukYSU7T42DrPOrjp7w4+sXRM/7SMZKtdcd8jDpG6wAZ2HUdo46RDOzHETt2E+OlcTs2+HtVz/SMJCsfBpqX
+6Zme0Xk/MoX9PfRMz0hymA+KgdRK4ewExlt6pmckeVuuOd9IPXPe0PlDJuC+nlHPSCbgSz2jnpFMwFPrQahn1hWSCbhtfkY9I5mA
+9/WMekYyAd/pGfXM+kAyAZ/oGfWMZAL+sB6EekYyAbfMz9iCnjlfSLpPjJ7R/IxkhPHogZ5Rz0gm4KGecYI9c96P5G15Yj0Izc9I
+Tvn69E2MV+0PQj0jaT2InrWtZ93asei8IckG+VrPaH5GOh+YwPhzV8+oZyQT8Mx6EOOxK8ZjekYygpvmZzQ/I90HLwE39Ix6RjIB
+9/TMdVk9I5mAR3pGPSOd/0tA+4NQz0i6X0x7etbmfQf1jKT9QczPzM9I5w05Gd/qGfWMZAI+a3jP6uOivHT5ksf7xdFryPjqD5Vw
+uNI=
+"""
+
+
+def load_delays() -> List[int]:
+    raw = zlib.decompress(base64.b64decode(_DELAYS_Z64))
+    return list(struct.unpack('<' + 'I' * (len(raw) // 4), raw))
+
+
+def precise_sleep_us(us: int) -> None:
+    """Sleep abbastanza preciso per pause millisecondi; busy-wait solo negli ultimi 300 us."""
+    if us <= 0:
+        return
+    target = time.monotonic_ns() + us * 1000
+    if us > 800:
+        time.sleep((us - 300) / 1_000_000.0)
+    while time.monotonic_ns() < target:
+        pass
+
+
+def print_summary(delays: List[int]) -> None:
+    print(f"[data] fronti incorporati: {EVENT_COUNT}")
+    print(f"[data] durata CSV intera:  {DURATION_US/1000.0:.3f} ms")
+    print(f"[data] start CSV:          {SOURCE_START_MS:.9f} ms")
+    print(f"[data] soglia originale:   {THRESHOLD_V:.3f} V")
+    print(f"[data] primo tratto:       HIGH per {delays[0]/1000.0:.3f} ms")
+    print(f"[data] startup critico:    fino a {CRITICAL_END_US/1000.0:.3f} ms, poi linea lasciata HIGH")
+    print(f"[data] coda continua CSV:  da {TAIL_EDGE_US/1000.0:.3f} a {DURATION_US/1000.0:.3f} ms")
+    print(f"[data] min/max delay:      {min(delays)} us / {max(delays)} us")
+
+
+def make_wave(pi, gpio: int, levels_and_delays: List[Tuple[int, int]], invert: bool) -> int:
+    mask = 1 << gpio
+    pulses = []
+    for level, delay in levels_and_delays:
+        out_level = level ^ (1 if invert else 0)
+        on = mask if out_level else 0
+        off = 0 if out_level else mask
+        pulses.append(pigpio.pulse(on, off, max(1, int(delay))))
+    pi.wave_clear()
+    pi.wave_add_generic(pulses)
+    wid = pi.wave_create()
+    if wid < 0:
+        raise RuntimeError(f"wave_create fallita, codice {wid}, pulse={len(pulses)}")
+    return wid
+
+
+def send_small_wave(pi, gpio: int, seq: List[Tuple[int, int]], invert: bool, verbose: bool = False) -> None:
+    if not seq:
+        return
+    wid = make_wave(pi, gpio, seq, invert)
+    try:
+        if verbose:
+            dur = sum(d for _, d in seq)
+            print(f"[wave] {len(seq)} pulse, {dur} us")
+        pi.wave_send_once(wid)
+        while pi.wave_tx_busy():
+            time.sleep(0.0005)
+    finally:
+        try:
+            pi.wave_delete(wid)
+        except Exception:
+            pass
+
+
+def play_edge_stream_until(pi, gpio: int, delays: List[int], stop_us: int, args) -> int:
+    """Riproduce i delay dal t=0 fino a stop_us.
+
+    I ritardi lunghi vengono fatti con write+sleep, le parti veloci con piccole
+    wave DMA. Al raggiungimento di stop_us non viene generato il fronte successivo:
+    la linea rimane nel livello corrente, che per la sequenza critica e' HIGH.
+    """
+    level = START_LEVEL
+    t_us = 0
+    i = 0
+    small: List[Tuple[int, int]] = []
+    small_start_t = 0
+
+    def flush_small():
+        nonlocal small
+        if small:
+            send_small_wave(pi, gpio, small, args.invert, args.verbose)
+            small = []
+
+    while i < len(delays) and t_us < stop_us:
+        delay = int(delays[i])
+        remaining = stop_us - t_us
+        if delay > remaining:
+            # Ultimo tratto parziale: mantieni il livello e fermati senza togglare.
+            flush_small()
+            pi.write(gpio, level ^ (1 if args.invert else 0))
+            if args.verbose:
+                print(f"[hold] livello {level} per {remaining} us, stop senza fronte")
+            precise_sleep_us(remaining)
+            t_us += remaining
+            break
+
+        # Se e' una pausa lunga, conviene non sprecarla dentro pigpio wave.
+        if delay >= args.long_delay_us:
+            flush_small()
+            pi.write(gpio, level ^ (1 if args.invert else 0))
+            if args.verbose:
+                print(f"[sleep] t={t_us/1000:.3f} ms livello={level} delay={delay} us")
+            precise_sleep_us(delay)
+        else:
+            if not small:
+                small_start_t = t_us
+            small.append((level, delay))
+            if len(small) >= args.max_small_pulses:
+                flush_small()
+
+        t_us += delay
+        level ^= 1
+        i += 1
+
+    flush_small()
+    # Lascia il livello corrente coerente. Per mode=startup lo forziamo HIGH dopo.
+    pi.write(gpio, level ^ (1 if args.invert else 0))
+    return t_us
+
+
+def build_uart_wave_for_bytes(data: bytes, bit_us: int = 2, gap_us: int = 800) -> List[Tuple[int, int]]:
+    """Costruisce un'onda UART 8N1 TTL idle HIGH come coppie livello/durata.
+    Usato solo per la coda facoltativa, non per la parte critica da CSV.
+    """
+    bits: List[int] = []
+    for b in data:
+        bits.append(0)  # start
+        for n in range(8):
+            bits.append((b >> n) & 1)
+        bits.append(1)  # stop
+    bits.extend([1] * max(1, gap_us // bit_us))
+    # comprime bit consecutivi uguali
+    out: List[Tuple[int, int]] = []
+    cur = bits[0]
+    count = 0
+    for bit in bits:
+        if bit == cur:
+            count += 1
+        else:
+            out.append((cur, count * bit_us))
+            cur = bit
+            count = 1
+    out.append((cur, count * bit_us))
+    return out
+
+
+# Primo frame della coda continua decodificato dal CSV, 210 byte, byte +15 = 0x30.
+TAIL_FRAME0_HEX = (
+    "80 00 00 00 00 00 00 00 00 00 00 00 00 7c 7b 30 "
+    "00 00 00 0f "
+    + "00 " * 42 + "01 02 " + "00 " * (210 - 16 - 4 - 42 - 2)
+).strip()
+
+
+def tail_frame0() -> bytes:
+    bs = bytes.fromhex(TAIL_FRAME0_HEX)
+    if len(bs) != 210:
+        raise RuntimeError(f"TAIL_FRAME0 len={len(bs)} invece di 210")
+    return bs
+
+
+def play_tail_repeated(pi, gpio: int, args) -> None:
+    frame = tail_frame0()
+    seq = build_uart_wave_for_bytes(frame, bit_us=2, gap_us=args.tail_gap_us)
+    # La wave di un frame solo e' piccola; la ripetiamo da Python. Non e' bit-identica
+    # alla coda CSV, ma evita i 37000 fronti che saturano i CB di pigpio.
+    repeats = max(1, int(args.tail_ms / ((4200 + args.tail_gap_us) / 1000.0)))
+    print(f"[tail] ripeto frame GPIO UART-like: {repeats} volte, gap={args.tail_gap_us} us")
+    for k in range(repeats):
+        send_small_wave(pi, gpio, seq, args.invert, False)
+
+
+def release_gpio_hiz(pi, gpio: int) -> None:
+    """Rilascia il GPIO come se fosse staccato: input, pull-up/down disabilitati."""
+    try:
+        pi.set_pull_up_down(gpio, pigpio.PUD_OFF)
+    except Exception:
+        pass
+    pi.set_mode(gpio, pigpio.INPUT)
+
+
+def play(args) -> int:
+    delays = load_delays()
+    print_summary(delays)
+    if args.analyze:
+        print("[stop] analyze only")
+        return 0
+    if pigpio is None:
+        print("[error] modulo pigpio non trovato: ../venv/bin/pip install pigpio", file=sys.stderr)
+        return 2
+    pi = pigpio.pi()
+    if not pi.connected:
+        print("[error] pigpiod non raggiungibile. Avvia: sudo pigpiod -s 1", file=sys.stderr)
+        return 2
+
+    try:
+        pi.set_mode(args.gpio, pigpio.OUTPUT)
+        pi.wave_clear()
+        # Prima del t=0 il CSV e' LOW, poi il primo evento e' LOW->HIGH.
+        pi.write(args.gpio, 0 if not args.invert else 1)
+        time.sleep(args.pre_idle_ms / 1000.0)
+
+        if args.mode == "startup":
+            stop_us = CRITICAL_END_US
+        elif args.mode == "early":
+            stop_us = 801041
+        elif args.mode == "custom":
+            stop_us = int(args.stop_ms * 1000)
+        else:
+            print(f"[error] mode sconosciuto: {args.mode}", file=sys.stderr)
+            return 2
+
+        print("[play] START ORA: t=0 = primo LOW->HIGH CH2")
+        start = time.monotonic_ns()
+        elapsed_us = play_edge_stream_until(pi, args.gpio, delays, stop_us, args)
+
+        # Per startup, non generare il fronte HIGH->LOW della coda: resta in idle HIGH.
+        if args.leave_high:
+            pi.write(args.gpio, 1 if not args.invert else 0)
+
+        if args.tail_repeated:
+            play_tail_repeated(pi, args.gpio, args)
+            if args.leave_high:
+                pi.write(args.gpio, 1 if not args.invert else 0)
+
+        real_ms = (time.monotonic_ns() - start) / 1_000_000.0
+        print(f"[play] fine: sequenza temporale riprodotta fino a {elapsed_us/1000.0:.3f} ms; tempo reale {real_ms:.3f} ms")
+        if not args.tail_repeated:
+            print("[note] coda continua finale NON inviata: per inviarla in forma compatta usa --tail-repeated")
+
+        if args.release_input:
+            release_gpio_hiz(pi, args.gpio)
+            print(f"[gpio] GPIO{args.gpio} rilasciato: INPUT, pull-up/down OFF = alta impedenza")
+        else:
+            print(f"[gpio] GPIO{args.gpio} lasciato come OUTPUT livello {'HIGH' if args.leave_high else 'corrente'}")
+        return 0
+    finally:
+        try:
+            pi.wave_clear()
+            # In caso di eccezione, se richiesto, prova comunque a rilasciare il pin.
+            if 'args' in locals() and getattr(args, 'release_input', False):
+                try:
+                    release_gpio_hiz(pi, args.gpio)
+                except Exception:
+                    pass
+            pi.stop()
+        except Exception:
+            pass
+
+
+
+def gpio_write_once(gpio: int, level: int) -> Tuple[bool, str]:
+    """Write a BCM GPIO level through pigpio and return (ok, message)."""
+    if gpio is None:
+        return True, "gpio non configurato"
+    if pigpio is None:
+        return False, "modulo pigpio non trovato: ../venv/bin/pip install pigpio"
+    pi = pigpio.pi()
+    if not pi.connected:
+        return False, "pigpiod non raggiungibile. Avvia: sudo pigpiod -s 1"
+    try:
+        pi.set_mode(int(gpio), pigpio.OUTPUT)
+        pi.write(int(gpio), 1 if int(level) else 0)
+        return True, f"GPIO{gpio}={'HIGH' if int(level) else 'LOW'}"
+    finally:
+        try:
+            pi.stop()
+        except Exception:
+            pass
+
+def run_embedded_power_replay(gpio: int, tail_repeated: bool = True, verbose: bool = False) -> Tuple[bool, str]:
+    """Run the known-good CH2 GPIO replay used to wake the FTM-150 body."""
+    ns = argparse.Namespace(
+        gpio=int(gpio),
+        mode="startup",
+        stop_ms=1452.096,
+        long_delay_us=10000,
+        max_small_pulses=600,
+        pre_idle_ms=50.0,
+        invert=False,
+        leave_high=True,
+        release_input=True,
+        tail_repeated=bool(tail_repeated),
+        tail_ms=430.0,
+        tail_gap_us=800,
+        verbose=bool(verbose),
+        analyze=False,
+    )
+    rc = play(ns)
+    if rc == 0:
+        return True, "sequenza GPIO CH2 completata"
+    return False, f"sequenza GPIO CH2 fallita, rc={rc}"
+
+
 class WebContext:
-    def __init__(self, tx: Optional[PanelTx], rx: Optional[BodyRx], demo: bool = False, audio: Optional[AudioStreamer] = None, tx_audio: Optional[TxAudioSink] = None, ptt: Optional[BasePttController] = None, decode_enabled: bool = False):
+    def __init__(self, tx: Optional[PanelTx], rx: Optional[BodyRx], demo: bool = False, audio: Optional[AudioStreamer] = None, tx_audio: Optional[TxAudioSink] = None, ptt: Optional[BasePttController] = None, decode_enabled: bool = False, power_gpio: Optional[int] = 18, uart_select_gpio: Optional[int] = 23, radio_start_on: bool = False, rx_power_timeout_s: float = 1.2):
         self.tx = tx
         self.rx = rx
         self.demo = demo
@@ -8248,6 +8685,18 @@ class WebContext:
         self.tx_audio = tx_audio
         self.ptt = ptt
         self.decode_enabled = bool(decode_enabled)
+        self.power_gpio = power_gpio
+        self.uart_select_gpio = uart_select_gpio
+        # radio_powered is now a watchdog state derived from live RX frames.
+        # radio_start_on is only an initial hint; as soon as RX stops/starts,
+        # _refresh_radio_power_from_rx() becomes authoritative.
+        self.radio_powered = bool(radio_start_on or demo)
+        self.powering_on = False
+        self.rx_power_timeout_s = max(0.2, float(rx_power_timeout_s or 1.2))
+        self.power_lock = threading.Lock()
+        self.power_message = "radio attiva" if self.radio_powered else "radio spenta"
+        self._uart_usb_selected: Optional[bool] = None
+        self._power_watchdog_stop = threading.Event()
         self._web_html = build_web_html(self.decode_enabled)
         self.started = time.time()
         self.ptt_latched = False
@@ -8290,6 +8739,19 @@ class WebContext:
         # DISPLAY settings remembered during the current process.
         # They are updated only when the radio frame exposes a learned value.
         self.session_display_settings: dict = {}
+        if self.uart_select_gpio is not None:
+            ok, msg = gpio_write_once(int(self.uart_select_gpio), 1 if self.radio_powered else 0)
+            if ok:
+                self._uart_usb_selected = bool(self.radio_powered)
+            self.power_message = msg if ok else msg
+            if ok and self.radio_powered:
+                print(f"[power] radio già attiva: S GPIO{self.uart_select_gpio}=HIGH, TX USB selezionato")
+            elif ok:
+                print(f"[power] radio spenta: S GPIO{self.uart_select_gpio}=LOW, selezionata linea GPIO replay")
+            else:
+                print(f"[power] ATTENZIONE: non riesco a impostare S GPIO{self.uart_select_gpio}: {msg}", file=sys.stderr)
+        self._power_watchdog_thread = threading.Thread(target=self._power_watchdog_loop, name="power-watchdog", daemon=True)
+        self._power_watchdog_thread.start()
 
     def web_html(self) -> str:
         return self._web_html
@@ -8340,6 +8802,7 @@ class WebContext:
         return frame, ts, counters
 
     def state(self) -> dict:
+        self._refresh_radio_power_from_rx()
         frame, ts, counters = self.current_frame()
         sm_style = _smeter_symbol_from_display_frame(frame)
         if sm_style in ("BARS", "SCALE", "CONTINUE", "FULL SIZE"):
@@ -8372,7 +8835,10 @@ class WebContext:
                 overlay_latched = True
         overlay = confirm_overlay or {"active": bool(overlay_text), "kind": "text" if overlay_text else "none", "text": overlay_text, "latched": overlay_latched}
         save_st = SAVE_RECORDER.status() if globals().get("SAVE_RECORDER") is not None else {"active": False}
-        return {"demo": self.demo, "age_s": age if age is not None else 9999.0, "counters": counters, "main": main, "left": _side_for_web(frame, SIDE_LEFT), "right": _side_for_web(frame, SIDE_RIGHT), "activity": activity, "mute": overlay_text == "MUTE", "overlay": overlay, "menu": menu, "display_settings": self.display_settings(), "ptt_latched": self.ptt_latched, "tx_audio_active": self.tx_audio_active, "save": save_st, "human": human}
+        power_st = self.power_status()
+        out = {"demo": self.demo, "age_s": age if age is not None else 9999.0, "counters": counters, "main": main, "left": _side_for_web(frame, SIDE_LEFT), "right": _side_for_web(frame, SIDE_RIGHT), "activity": activity, "mute": overlay_text == "MUTE", "overlay": overlay, "menu": menu, "display_settings": self.display_settings(), "ptt_latched": self.ptt_latched, "tx_audio_active": self.tx_audio_active, "save": save_st, "human": human}
+        out.update(power_st)
+        return out
 
     def _copy_menu(self, menu: dict) -> dict:
         try:
@@ -8868,6 +9334,189 @@ class WebContext:
         print(f"[startup-sync-removed] applied baseline: {settings or 'none'}")
         return settings
 
+    def _rx_power_info(self) -> Tuple[bool, Optional[float], int]:
+        """Return (alive, age_seconds, frame_count) from the RX-frame watchdog."""
+        if self.demo:
+            return True, 0.0, 0
+        if self.rx is None:
+            # In --no-rx mode there is no reliable way to infer power from the
+            # radio. Keep the manual/initial state.
+            return bool(self.radio_powered), None, 0
+        try:
+            ts, frames = self.rx.activity_snapshot()
+        except Exception:
+            return False, None, 0
+        if ts is None or frames <= 0:
+            return False, None, int(frames or 0)
+        age = max(0.0, time.time() - ts)
+        return age <= self.rx_power_timeout_s, age, int(frames)
+
+    def _refresh_radio_power_from_rx(self) -> bool:
+        """Synchronize UI/electrical state with live RX frames.
+
+        When valid RX frames disappear for rx_power_timeout_s, the radio is
+        considered OFF and the 74LVC157A selects the GPIO replay source. When
+        frames appear again, the radio is considered ON and USB-TTL TX is
+        selected.
+        """
+        alive, age, frames = self._rx_power_info()
+        if self.demo or self.rx is None:
+            return bool(self.radio_powered)
+
+        changed = False
+        with self.power_lock:
+            was = bool(self.radio_powered)
+            if alive and not was:
+                self.radio_powered = True
+                self.power_message = f"radio accesa: RX frame attivi ({frames})"
+                changed = True
+            elif (not alive) and was and not self.powering_on:
+                self.radio_powered = False
+                if age is None:
+                    self.power_message = "radio spenta: nessun frame RX"
+                else:
+                    self.power_message = f"radio spenta: RX assente da {age:.1f}s"
+                changed = True
+
+        if changed:
+            if alive:
+                ok, msg = self._set_uart_select_usb(True)
+                if ok:
+                    print(f"[power] RX frame rilevati: radio ON, S GPIO{self.uart_select_gpio}=HIGH")
+                else:
+                    print(f"[power] errore selezione TX USB dopo RX alive: {msg}", file=sys.stderr)
+            else:
+                try:
+                    self.release()
+                except Exception:
+                    pass
+                ok, msg = self._set_uart_select_usb(False)
+                if ok:
+                    print(f"[power] RX fermo: radio OFF, S GPIO{self.uart_select_gpio}=LOW")
+                else:
+                    print(f"[power] errore isolamento TX USB dopo RX stop: {msg}", file=sys.stderr)
+        return alive
+
+    def _power_watchdog_loop(self) -> None:
+        while not self._power_watchdog_stop.is_set():
+            try:
+                self._refresh_radio_power_from_rx()
+            except Exception as e:
+                if not getattr(self, "demo", False):
+                    print(f"[power] watchdog error: {e}", file=sys.stderr)
+            self._power_watchdog_stop.wait(0.20)
+
+    def _set_uart_select_usb(self, usb_enabled: bool) -> Tuple[bool, str]:
+        """Select which source reaches radio pin 6 through the 74LVC157A S pin.
+
+        Wiring assumed here:
+          S LOW  -> GPIO18 replay source selected
+          S HIGH -> USB-TTL TX source selected
+        """
+        if self.uart_select_gpio is None:
+            return True, "S GPIO non configurato"
+        usb_enabled = bool(usb_enabled)
+        if self._uart_usb_selected is usb_enabled:
+            return True, (
+                f"S GPIO{self.uart_select_gpio}=HIGH, TX USB già selezionato"
+                if usb_enabled else
+                f"S GPIO{self.uart_select_gpio}=LOW, replay GPIO già selezionato"
+            )
+        level = 1 if usb_enabled else 0
+        ok, msg = gpio_write_once(int(self.uart_select_gpio), level)
+        if ok:
+            self._uart_usb_selected = usb_enabled
+            self.power_message = (
+                f"S GPIO{self.uart_select_gpio}=HIGH, TX USB selezionato"
+                if usb_enabled else
+                f"S GPIO{self.uart_select_gpio}=LOW, replay GPIO selezionato"
+            )
+        else:
+            self.power_message = msg
+        return ok, msg
+
+    def start_radio_power_sequence(self) -> Tuple[bool, str, dict]:
+        """Run the validated GPIO CH2 power-on sequence, then reconnect USB TX."""
+        with self.power_lock:
+            if self.radio_powered:
+                return True, "radio già attiva", self.power_status()
+            if self.powering_on:
+                return False, "accensione già in corso", self.power_status()
+            self.powering_on = True
+            self.power_message = "accensione: seleziono replay GPIO"
+
+        try:
+            if self.tx is not None:
+                try:
+                    self.tx.release()
+                except Exception:
+                    pass
+
+            ok, msg = self._set_uart_select_usb(False)
+            if not ok:
+                return False, msg, self.power_status()
+
+            if self.power_gpio is None:
+                return False, "GPIO replay non configurato", self.power_status()
+
+            self.power_message = f"accensione: replay CH2 su GPIO{self.power_gpio}"
+            ok, msg = run_embedded_power_replay(int(self.power_gpio), tail_repeated=True, verbose=False)
+            if not ok:
+                self.power_message = msg
+                return False, msg, self.power_status()
+
+            self.power_message = "accensione: riconnetto TX USB e attendo frame RX"
+            ok, msg = self._set_uart_select_usb(True)
+            if not ok:
+                return False, msg, self.power_status()
+
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if self._refresh_radio_power_from_rx():
+                    with self.power_lock:
+                        self.power_message = "radio accesa: frame RX ricevuti"
+                    return True, self.power_message, self.power_status()
+                time.sleep(0.05)
+
+            with self.power_lock:
+                self.power_message = "sequenza accensione inviata; in attesa di frame RX"
+            return True, self.power_message, self.power_status()
+        except Exception as e:
+            self.power_message = f"errore accensione: {e}"
+            return False, self.power_message, self.power_status()
+        finally:
+            with self.power_lock:
+                self.powering_on = False
+
+    def mark_radio_off(self) -> Tuple[bool, str, dict]:
+        """Deprecated manual off marker; RX watchdog is authoritative."""
+        self._refresh_radio_power_from_rx()
+        alive, age, frames = self._rx_power_info()
+        if alive:
+            return True, "radio ancora attiva: frame RX presenti", self.power_status()
+        with self.power_lock:
+            self.radio_powered = False
+            self.powering_on = False
+            self.power_message = "radio spenta: RX assente, isolo TX USB"
+        ok, msg = self._set_uart_select_usb(False)
+        if not ok:
+            return False, msg, self.power_status()
+        return True, "radio spenta da watchdog RX; S LOW, USB TX isolato", self.power_status()
+
+    def power_status(self) -> dict:
+        alive, age, frames = self._rx_power_info()
+        return {
+            "radio_powered": bool(self.radio_powered),
+            "powering_on": bool(self.powering_on),
+            "power_message": self.power_message,
+            "power_gpio": self.power_gpio,
+            "uart_select_gpio": self.uart_select_gpio,
+            "rx_power_alive": bool(alive),
+            "rx_power_age_s": age,
+            "rx_power_frames": frames,
+            "rx_power_timeout_s": self.rx_power_timeout_s,
+        }
+
     def audio_state(self) -> dict:
         # Keep the old top-level RX fields for the v38 browser code, and add a
         # nested TX section for microphone transmission.
@@ -8880,17 +9529,23 @@ class WebContext:
         return out
 
     def pulse_command(self, name: str, duration: Optional[str] = None) -> Tuple[bool, str]:
+        self._refresh_radio_power_from_rx()
         if self.tx is None:
             return False, "TX non disponibile in modalità demo/no-tx"
         c = canon(name)
         if c not in COMMANDS:
             return False, f"comando sconosciuto: {name}"
+        if not self.radio_powered:
+            return False, "radio spenta: tieni premuto POWER per accendere"
         self._track_menu_command(c)
         frames = parse_duration_token(duration, default_frames_for(c)) if duration else default_frames_for(c)
         self.tx.pulse(c, COMMANDS[c], frames)
         return True, f"{c} {frames}f"
 
     def toggle_ptt(self) -> Tuple[bool, str, bool]:
+        self._refresh_radio_power_from_rx()
+        if not self.radio_powered:
+            return False, "radio spenta", self.ptt_latched
         if self.ptt is None:
             return False, "PTT non configurato", self.ptt_latched
         try:
@@ -8905,6 +9560,9 @@ class WebContext:
             return False, str(e), self.ptt_latched
 
     def start_tx_audio_session(self) -> None:
+        self._refresh_radio_power_from_rx()
+        if not self.radio_powered:
+            raise RuntimeError("radio spenta")
         if self.tx_audio is None:
             raise RuntimeError("TX audio non configurato")
         if self.ptt is None:
@@ -8938,20 +9596,26 @@ class WebContext:
 
 
     def hold_command(self, name: str) -> Tuple[bool, str]:
+        self._refresh_radio_power_from_rx()
         if self.tx is None:
             return False, "TX non disponibile"
         c = canon(name)
         if c not in COMMANDS:
             return False, f"comando sconosciuto: {name}"
+        if not self.radio_powered:
+            return False, "radio spenta: tieni premuto POWER per accendere"
         self.tx.hold(c, COMMANDS[c])
         return True, f"hold {c}"
 
     def named_hold_command(self, name: str) -> Tuple[bool, str]:
+        self._refresh_radio_power_from_rx()
         if self.tx is None:
             return False, "TX non disponibile"
         c = canon(name)
         if c not in COMMANDS:
             return False, f"comando sconosciuto: {name}"
+        if not self.radio_powered:
+            return False, "radio spenta: tieni premuto POWER per accendere"
         self.tx.named_hold(f"web_button_{c}", c, COMMANDS[c])
         return True, f"hold {c}"
 
@@ -9021,6 +9685,14 @@ class FTM150WebHandler(BaseHTTPRequestHandler):
         if path == "/api/save":
             ok, msg, st = self.ctx.save_action(str(body.get("action", "status")), str(body.get("label", "session")), str(body.get("outdir", ".")))
             _json_response(self, {"ok": ok, "message": msg, "save": st, "error": None if ok else msg}, 200 if ok else 400)
+            return
+        if path == "/api/power_start":
+            ok, msg, st = self.ctx.start_radio_power_sequence()
+            _json_response(self, {"ok": ok, "message": msg, "power": st, "error": None if ok else msg}, 200 if ok else 400)
+            return
+        if path == "/api/radio_off":
+            ok, msg, st = self.ctx.mark_radio_off()
+            _json_response(self, {"ok": ok, "message": msg, "power": st, "error": None if ok else msg}, 200 if ok else 400)
             return
         if path == "/api/command":
             ok, msg = self.ctx.pulse_command(str(body.get("command", "")), body.get("duration"))
@@ -9126,7 +9798,20 @@ def web_main() -> int:
     ap.add_argument("--cm108-hidraw", default="auto", help="/dev/hidrawN della CM108/CM119; default auto in base a --tx-audio-device")
     ap.add_argument("--cm108-gpio", type=int, default=3, help="GPIO CM108/CM119 usato per PTT; tipico AllStar/Direwolf = 3")
     ap.add_argument("--cm108-ptt-invert", action="store_true", help="inverte la logica HID GPIO se il tuo interfaccia richiede 0 per trasmettere")
+    ap.add_argument("--power-gpio", type=int, default=18, help="GPIO BCM che riproduce CH2/pin6 per accendere la radio; default 18")
+    ap.add_argument("--uart-select-gpio", type=int, default=23, help="GPIO BCM collegato a S del 74LVC157A: LOW=replay GPIO, HIGH=TX USB; default 23")
+    ap.add_argument("--radio-start-on", action="store_true", help="hint iniziale: avvia la GUI come se la radio fosse già accesa; poi decide il watchdog RX")
+    ap.add_argument("--rx-power-timeout", type=float, default=1.2, help="secondi senza frame RX validi prima di considerare la radio spenta; default 1.2")
     args = ap.parse_args()
+
+    # Important at process startup: isolate the USB-TTL TX before opening the
+    # serial port, otherwise its idle HIGH can disturb the GPIO replay line.
+    if not args.radio_start_on and args.uart_select_gpio is not None:
+        ok, msg = gpio_write_once(int(args.uart_select_gpio), 0)
+        if ok:
+            print(f"[power] pre-init: S GPIO{args.uart_select_gpio}=LOW, TX USB isolato")
+        else:
+            print(f"[power] warning pre-init S LOW fallito: {msg}", file=sys.stderr)
 
     ser = None
     tx = None
@@ -9214,7 +9899,7 @@ def web_main() -> int:
     else:
         print("[ptt] disabilitato: il TX audio non keyerà la radio")
 
-    ctx = WebContext(tx=tx, rx=rx, demo=args.demo, audio=audio, tx_audio=tx_audio, ptt=ptt, decode_enabled=args.decode)
+    ctx = WebContext(tx=tx, rx=rx, demo=args.demo, audio=audio, tx_audio=tx_audio, ptt=ptt, decode_enabled=args.decode, power_gpio=args.power_gpio, uart_select_gpio=args.uart_select_gpio, radio_start_on=args.radio_start_on, rx_power_timeout_s=args.rx_power_timeout)
     FTM150WebHandler.ctx = ctx
     httpd = ThreadingHTTPServer((args.host, args.web_port), FTM150WebHandler)
     httpd.verbose_http = args.verbose_http
