@@ -1,27 +1,27 @@
 # FreeRig
 
-Client iOS SwiftUI per il backend `ftm150.py`.
+SwiftUI iOS client for the `ftm150.py` backend.
 
-## Stato attuale
+## Current Status
 
-- Connessione backend con Basic Auth.
-- Stato live via `state.ws`, con fallback interno a polling lato view model.
-- Comandi radio via REST:
+- Backend connection with Basic Auth.
+- Live state via `state.ws`, with internal polling fallback in the view model.
+- Radio commands via REST:
   - `/api/command`
   - `/api/command_hold`
   - `/api/command_release`
   - `/api/power_start`
   - `/api/ptt_toggle`
-- RX audio da `/audio.pcm`.
-- TX microfono verso `/audio-tx.ws`.
+- RX audio from `/audio.pcm`.
+- Microphone TX to `/audio-tx.ws`.
 
-## Aprire il progetto
+## Open The Project
 
-Apri in Xcode:
+Open in Xcode:
 
 - `ios/FreeRig/FreeRig.xcodeproj`
 
-## Note
+## Notes
 
-- L'app emula i controlli fisici della radio. Questo permette già di navigare menu e setup senza dover duplicare subito tutta la logica grafica del frontend web.
-- Il rendering dei menu nell'app è per ora riassuntivo, non una copia 1:1 delle viste speciali del browser.
+- The app emulates the physical controls of the radio. This already makes it possible to navigate menus and setup without immediately duplicating the full web frontend rendering logic.
+- Menu rendering in the app is still summarized for now, not a 1:1 copy of every special browser view.

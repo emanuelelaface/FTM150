@@ -296,15 +296,15 @@ def frames_to_ms(frames: int) -> float:
 def apply_ops(frame: bytearray, ops: Iterable[Op]) -> None:
     for mode, off, val in ops:
         if not (0 <= off < TX_FRAME_LEN):
-            raise ValueError(f"offset fuori frame: {off}")
+            raise ValueError(f"offset out of frame: {off}")
         if not (0 <= val <= 0xff):
-            raise ValueError(f"valore byte non valido: {val}")
+            raise ValueError(f"invalid byte value: {val}")
         if mode == "set":
             frame[off] = val
         elif mode == "or":
             frame[off] |= val
         else:
-            raise ValueError(f"operazione sconosciuta: {mode}")
+            raise ValueError(f"unknown operation: {mode}")
 
 
 @dataclass
@@ -372,7 +372,7 @@ class PanelTx:
     def hold(self, label: str, ops: State) -> None:
         with self.lock:
             self.hold_ops.extend(ops)
-        print(f"[hold] {label}; usa 'release' per tornare idle")
+        print(f"[hold] {label}; use 'release' to return to idle")
         rec = globals().get("SAVE_RECORDER")
         if rec is not None:
             rec.record_command("hold", label, ops=ops)
@@ -440,7 +440,7 @@ class PanelTx:
                 # Prevent huge OS buffering; we want command changes to appear quickly.
                 self.ser.flush()
             except serial.SerialException as e:
-                print(f"[serial] errore TX: {e}", file=sys.stderr)
+                print(f"[serial] TX error: {e}", file=sys.stderr)
                 self.stop.set()
                 return
             self.frames_sent += 1
@@ -449,7 +449,7 @@ class PanelTx:
                 now = time.monotonic()
                 if now - last_report >= 2.0:
                     fps = (self.frames_sent - last_count) / (now - last_report)
-                    print(f"[stat] TX {fps:.1f} frame/s, nominale ≈ {1000.0 / TX_FRAME_TIME_MS:.1f} frame/s")
+                    print(f"[stat] TX {fps:.1f} frame/s, nominal ≈ {1000.0 / TX_FRAME_TIME_MS:.1f} frame/s")
                     last_report = now
                     last_count = self.frames_sent
 
@@ -601,7 +601,7 @@ class BodyRx:
             try:
                 data = self.ser.read(4096)
             except serial.SerialException as e:
-                print(f"[serial] errore RX: {e}", file=sys.stderr)
+                print(f"[serial] RX error: {e}", file=sys.stderr)
                 self.stop.set()
                 return
             if data:
@@ -724,7 +724,7 @@ class BodyRx:
                         })
                     except Exception as e:
                         if self.verbose:
-                            print(f"[save] errore recorder RX: {e}", file=sys.stderr)
+                            print(f"[save] RX recorder error: {e}", file=sys.stderr)
 
             if self.verbose:
                 now_mono = time.monotonic()
@@ -869,14 +869,14 @@ def format_display_diff(base: bytes, frame: bytes, raw: bool = False, context: i
     """Human-readable diff between two RX display frames."""
     out: List[str] = []
     if len(base) != len(frame):
-        return f"frame di lunghezza diversa: base={len(base)} corrente={len(frame)}"
+        return f"frame length mismatch: base={len(base)} current={len(frame)}"
 
     ranges = diff_ranges(base, frame)
     if not ranges:
-        return "nessuna differenza dal riferimento display"
+        return "no differences from the display reference"
 
     nbytes = sum(b - a + 1 for a, b in ranges)
-    out.append(f"differenze display: {nbytes} byte in {len(ranges)} range")
+    out.append(f"display differences: {nbytes} bytes across {len(ranges)} ranges")
 
     for idx, (a, b) in enumerate(ranges[:80], 1):
         block = a // RX_BLOCK_LEN
@@ -889,9 +889,9 @@ def format_display_diff(base: bytes, frame: bytes, raw: bool = False, context: i
         old_asc = bytes_ascii(old)
         new_asc = bytes_ascii(new)
         if block == b // RX_BLOCK_LEN:
-            loc = f"+{a:04d}..+{b:04d} / blocco {block} +{inner_a:03d}..+{inner_b:03d}"
+            loc = f"+{a:04d}..+{b:04d} / block {block} +{inner_a:03d}..+{inner_b:03d}"
         else:
-            loc = f"+{a:04d}..+{b:04d} / attraversa blocchi"
+            loc = f"+{a:04d}..+{b:04d} / crosses blocks"
         out.append(f"  {idx:02d}. {loc}")
         out.append(f"      base: {old_hex:<47} {old_asc!r}")
         out.append(f"      now : {new_hex:<47} {new_asc!r}")
@@ -905,21 +905,21 @@ def format_display_diff(base: bytes, frame: bytes, raw: bool = False, context: i
             out.append("      " + hexdump(frame[ca:cb], ca).replace("\n", "\n      "))
 
     if len(ranges) > 80:
-        out.append(f"  ... altri {len(ranges) - 80} range")
+        out.append(f"  ... {len(ranges) - 80} more ranges")
     return "\n".join(out)
 
 
 def decode_display_snapshot(frame: bytes, raw: bool = False) -> str:
     out: List[str] = []
-    out.append(f"RX frame: {len(frame)} byte = 5 blocchi × 220 byte")
+    out.append(f"RX frame: {len(frame)} bytes = 5 blocks × 220 bytes")
 
     # Known/observed ASCII fields in block 0.
     field_32 = clean_ascii(frame[32:40])
     field_64 = clean_ascii(frame[64:72])
     if field_32:
-        out.append(f"campo +032: {field_32!r}")
+        out.append(f"field +032: {field_32!r}")
     if field_64:
-        out.append(f"campo +064: {field_64!r}")
+        out.append(f"field +064: {field_64!r}")
 
     runs = []
     for off, raw_s in ascii_runs(frame, 3):
@@ -933,33 +933,33 @@ def decode_display_snapshot(frame: bytes, raw: bool = False) -> str:
         runs.append((off, text))
 
     if runs:
-        out.append("stringhe ASCII trovate:")
+        out.append("ASCII strings found:")
         for off, text in runs:
             block = off // RX_BLOCK_LEN
             inner = off % RX_BLOCK_LEN
-            out.append(f"  +{off:04d} / blocco {block} +{inner:03d}: {text!r}")
+            out.append(f"  +{off:04d} / block {block} +{inner:03d}: {text!r}")
     else:
-        out.append("nessuna stringa ASCII visibile trovata nel frame dati")
+        out.append("no visible ASCII strings found in the data frame")
 
     # Compact binary status, useful while mapping display/icons/frequency.
     ranges = nonzero_ranges(frame)
     if ranges:
-        out.append("campi binari non vuoti/non-FF:")
+        out.append("non-empty/non-FF binary fields:")
         pieces = []
         for a, b in ranges[:40]:
             pieces.append(f"+{a:03d}..+{b:03d}")
         out.append("  " + "  ".join(pieces))
         if len(ranges) > 40:
-            out.append(f"  ... altri {len(ranges) - 40} range")
+            out.append(f"  ... {len(ranges) - 40} more ranges")
 
     if raw:
-        out.append("\nhexdump blocco 0:")
+        out.append("\nblock 0 hexdump:")
         out.append(hexdump(frame[:RX_BLOCK_LEN], 0))
         # Also show headers of the other blocks so you can confirm sync.
-        out.append("\nheader blocchi:")
+        out.append("\nblock headers:")
         for k in range(5):
             off = k * RX_BLOCK_LEN
-            out.append(f"  blocco {k}, offset +{off}: " + frame[off:off+16].hex(" "))
+            out.append(f"  block {k}, offset +{off}: " + frame[off:off+16].hex(" "))
 
     return "\n".join(out)
 
@@ -1724,7 +1724,7 @@ def decode_side(frame: bytes, side: str) -> DecodedSide:
 def decode_display_human(frame: bytes, raw: bool = False) -> str:
     """Return a compact human-readable view of mapped display fields."""
     if len(frame) < RX_BLOCK_LEN:
-        return f"frame troppo corto: {len(frame)} byte"
+        return f"frame too short: {len(frame)} bytes"
 
     left = decode_side(frame, SIDE_LEFT)
     right = decode_side(frame, SIDE_RIGHT)
@@ -1770,11 +1770,11 @@ def decode_display_human(frame: bytes, raw: bool = False) -> str:
 
 def print_display_decode(rx: Optional[BodyRx], raw: bool = False) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
     frame, ts, seen, data_seen, sync_losses = rx.snapshot()
     if frame is None:
-        print("[rx] nessun frame display normale ancora ricevuto. Controlla RX/GND e che il corpo stia trasmettendo.")
+        print("[rx] no normal display frame received yet. Check RX/GND and verify the body is transmitting.")
         print(f"     stats: frames={seen}, data={data_seen}, sync_loss={sync_losses}")
         return
     age = time.time() - ts if ts else -1
@@ -1783,12 +1783,12 @@ def print_display_decode(rx: Optional[BodyRx], raw: bool = False) -> None:
         c = rx.counters()
         if c.get("menu_ignored", 0):
             extra = f", menu_ignored={c['menu_ignored']}"
-    print(f"[rx] ultimo frame display normale: {age:.2f}s fa; frames={seen}, data={data_seen}, sync_loss={sync_losses}{extra}")
+    print(f"[rx] last normal display frame: {age:.2f}s ago; frames={seen}, data={data_seen}, sync_loss={sync_losses}{extra}")
     try:
         print(decode_display_human(frame, raw=raw))
     except Exception as e:
-        print(f"[decode] errore: {type(e).__name__}: {e}")
-        print("[decode] stampo comunque snapshot raw per debug:")
+        print(f"[decode] error: {type(e).__name__}: {e}")
+        print("[decode] printing raw snapshot for debugging anyway:")
         print(decode_display_snapshot(frame, raw=True))
 
 
@@ -1918,17 +1918,17 @@ def decode_menu_layout(frame: bytes, raw: bool = False) -> str:
       2) F-menu grid: nine 9-byte text cells starting at +61, +71, ...
     """
     out: List[str] = []
-    out.append(f"RX display2/menu frame: {len(frame)} byte = 5 blocchi × 220 byte")
+    out.append(f"RX display2/menu frame: {len(frame)} bytes = 5 blocks × 220 bytes")
     out.append(f"header: {frame[:16].hex(' ')}")
 
     area = menu_area_preview(frame)
     if area:
-        out.append("area testo menu +0060..+0150:")
+        out.append("menu text area +0060..+0150:")
         out.append(f"  {area!r}")
 
     numbered = find_numbered_menu_items(frame)
     if numbered:
-        out.append("lista menu numerata rilevata:")
+        out.append("numbered menu list detected:")
         for off, num, attr, text in numbered:
             # Observed attr 0x30 looks like selected/current; attr 0x10 like normal.
             mark = "*" if attr in (0x30, 0x31, 0x20, 0x21) else " "
@@ -1938,17 +1938,17 @@ def decode_menu_layout(frame: bytes, raw: bool = False) -> str:
     # Show grid when there are useful cell labels, or always in raw mode.
     useful_cells = [(idx, off, prefix, txt, raw_txt, rb) for idx, off, prefix, txt, raw_txt, rb in cells if txt.strip() or raw_txt.strip()]
     if raw or not numbered or len(useful_cells) >= 4:
-        out.append("celle/griglia 3×3 candidate, testo da +61,+71,...:")
+        out.append("candidate 3×3 grid cells, text from +61,+71,...:")
         for idx, off, prefix, txt, raw_txt, raw_bytes in cells:
             row = idx // 3
             col = idx % 3
             extra = "" if txt == raw_txt else f" raw_text={raw_txt!r}"
             out.append(
-                f"  cella {idx} r{row}c{col} text@+{off:04d}: "
+                f"  cell {idx} r{row}c{col} text@+{off:04d}: "
                 f"prefix@+{off-1:04d}={hx(prefix)} text={txt!r}{extra} raw={raw_bytes.hex(' ')}"
             )
 
-        out.append("griglia 3×3 candidata, usando il testo visibile stimato:")
+        out.append("candidate 3×3 grid, using the estimated visible text:")
         for r in range(3):
             row_cells = cells[r * 3:(r + 1) * 3]
             rendered = []
@@ -1959,32 +1959,32 @@ def decode_menu_layout(frame: bytes, raw: bool = False) -> str:
 
     ctrl_ranges = nonzero_ranges(frame[0:60])
     if ctrl_ranges:
-        out.append("area controllo/grafica +0000..+0059 non-zero:")
+        out.append("control/graphics area +0000..+0059 non-zero:")
         out.append("  " + "  ".join(f"+{a:03d}..+{b:03d}" for a, b in ctrl_ranges))
 
     if raw:
-        out.append("\nhexdump blocco 0:")
+        out.append("\nblock 0 hexdump:")
         out.append(hexdump(frame[:RX_BLOCK_LEN], 0))
-        out.append("\nheader blocchi:")
+        out.append("\nblock headers:")
         for k in range(5):
             off = k * RX_BLOCK_LEN
-            out.append(f"  blocco {k}, offset +{off}: " + frame[off:off+16].hex(" "))
+            out.append(f"  block {k}, offset +{off}: " + frame[off:off+16].hex(" "))
 
     return "\n".join(out)
 
 
 def print_menu_display(rx: Optional[BodyRx], raw: bool = False) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
     frame, ts, menu_seen = rx.menu_snapshot()
     if frame is None:
-        print("[rx] nessun frame display2/menu ricevuto finora")
+        print("[rx] no display2/menu frame received yet")
         return
     age = time.time() - ts if ts else -1
-    print(f"[rx] ultimo frame display2/menu: {age:.2f}s fa; menu_frames={menu_seen}")
+    print(f"[rx] last display2/menu frame: {age:.2f}s ago; menu_frames={menu_seen}")
     if age > 2.0:
-        print("[rx] nota: questo frame display2 è vecchio; la pagina corrente potrebbe non stare arrivando come display2")
+        print("[rx] note: this display2 frame is old; the current page may not be arriving as display2")
     print(decode_menu_layout(frame, raw=raw))
 
 
@@ -2003,16 +2003,16 @@ def get_rx_menu_frame(rx: Optional[BodyRx]) -> Tuple[Optional[bytes], Optional[f
 
 def display2_watchdiff(rx: Optional[BodyRx], base: Optional[bytes], seconds: float = 10.0, raw: bool = False) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
     if base is None:
         frame, ts, seen, menu_seen, sync_losses = get_rx_menu_frame(rx)
         if frame is None:
-            print("[rx] nessun frame display2/menu da usare come riferimento")
+            print("[rx] no display2/menu frame available to use as a reference")
             return
         base = frame
-        print("[rx] riferimento temporaneo display2 imparato dal frame corrente")
-    print(f"[rx] watchdiff display2 per {seconds:.1f}s; Ctrl-C per interrompere")
+        print("[rx] temporary display2 reference learned from the current frame")
+    print(f"[rx] display2 watchdiff for {seconds:.1f}s; Ctrl-C to interrupt")
     end = time.monotonic() + seconds
     last: Optional[bytes] = None
     try:
@@ -2031,9 +2031,9 @@ def display2_watchdiff(rx: Optional[BodyRx], base: Optional[bytes], seconds: flo
 
 def display2_watch(rx: Optional[BodyRx], seconds: float = 10.0) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
-    print(f"[rx] watch display2/menu per {seconds:.1f}s; Ctrl-C per interrompere")
+    print(f"[rx] watch display2/menu for {seconds:.1f}s; Ctrl-C to interrupt")
     end = time.monotonic() + seconds
     last: Optional[bytes] = None
     try:
@@ -2054,7 +2054,7 @@ def parse_raw(tokens: List[str]) -> Tuple[State, int]:
     raw 13=0x1c 14=0x4b 250ms
     """
     if not tokens:
-        raise ValueError("uso: raw offset=val [offset=val ...] [ms|framesf]")
+        raise ValueError("usage: raw offset=val [offset=val ...] [ms|framesf]")
 
     frames = DEFAULT_KEY_FRAMES
     if "=" not in tokens[-1]:
@@ -2064,7 +2064,7 @@ def parse_raw(tokens: List[str]) -> Tuple[State, int]:
     ops: State = []
     for tok in tokens:
         if "=" not in tok:
-            raise ValueError(f"argomento raw non valido: {tok}")
+            raise ValueError(f"invalid raw argument: {tok}")
         left, right = tok.split("=", 1)
         off = int(left, 0)
         val = int(right, 0)
@@ -2075,56 +2075,56 @@ def parse_raw(tokens: List[str]) -> Tuple[State, int]:
 def print_help() -> None:
     print(
         f"""
-Comandi:
-  list                         mostra nomi disponibili
-  <nome> [durata]              manda un impulso; es: band, vm 300ms, ul_left 20f
-  press <nome> [durata]        uguale a <nome> [durata]
-  hold <nome>                  mantiene quel tasto/stato attivo
-  release                      cancella hold/pulse e torna idle
-  raw off=val [off=val] [dur]  modifica byte arbitrari; es: raw 13=0x1c 14=0x4b 80f
-  save start [label] [outdir]   inizia registrazione schermate cambiate + comandi TX
-  save stop|end                 ferma registrazione e crea zip da mandarmi
-  save status                   stato registrazione
-  display                      stampa snapshot grezzo dal frame RX corpo→pannello normale
-  display raw                  come sopra, ma con hexdump del blocco 0
-  display menu                 alias legacy: mostra ultimo frame display2/menu
-  display2                     stampa snapshot grezzo del frame menu/configurazione
-  display2 raw                 come sopra, ma con hexdump del blocco 0
-  display2 cells               mostra layout menu: lista numerata o griglia candidata
-  display2 cells raw           layout menu + hexdump blocco 0
-  display2 learn [nome]        salva il frame display2 corrente come riferimento
-  display2 diff                differenze fra display2 corrente e riferimento
-  display2 diff raw            diff display2 con hexdump attorno ai byte cambiati
-  display2 watch [sec]         stampa quando cambia il display2 per N secondi
-  display2 watchdiff [sec]     stampa solo differenze display2 vs riferimento
-  display decode               stampa una versione human readable dei campi mappati
-  display decode raw           decode + dettaglio offset/byte usati
-  display learn [nome]         salva il frame corrente come riferimento display
-  display diff                 differenze fra frame corrente e riferimento
-  display diff raw             diff con hexdump attorno ai byte cambiati
-  display watch [sec]          stampa quando cambia il frame display per N secondi, default 10
-  display watchdiff [sec]      stampa solo differenze vs riferimento quando cambiano
-  rxstat                       statistiche RX
-  idle                         torna idle
-  quit                         esce
+Commands:
+  list                         show available names
+  <name> [duration]            send a pulse; e.g. band, vm 300ms, ul_left 20f
+  press <name> [duration]      same as <name> [duration]
+  hold <name>                  keep that button/state active
+  release                      clear hold/pulse and return to idle
+  raw off=val [off=val] [dur]  modify arbitrary bytes; e.g. raw 13=0x1c 14=0x4b 80f
+  save start [label] [outdir]  start recording changed screens + TX commands
+  save stop|end                stop recording and create a zip file
+  save status                  recording status
+  display                      print a raw snapshot from the normal RX body→panel frame
+  display raw                  same as above, but with a block-0 hexdump
+  display menu                 legacy alias: show the last display2/menu frame
+  display2                     print a raw snapshot of the menu/config frame
+  display2 raw                 same as above, but with a block-0 hexdump
+  display2 cells               show menu layout: numbered list or candidate grid
+  display2 cells raw           menu layout + block-0 hexdump
+  display2 learn [name]        save the current display2 frame as a reference
+  display2 diff                differences between current and reference display2
+  display2 diff raw            display2 diff with hexdump around changed bytes
+  display2 watch [sec]         print when display2 changes for N seconds
+  display2 watchdiff [sec]     print only display2 differences vs reference
+  display decode               print a human-readable version of mapped fields
+  display decode raw           decode + offset/byte details used
+  display learn [name]         save the current frame as the display reference
+  display diff                 differences between current frame and reference
+  display diff raw             diff with hexdump around changed bytes
+  display watch [sec]          print when the display frame changes for N seconds, default 10
+  display watchdiff [sec]      print only differences vs reference when they change
+  rxstat                       RX statistics
+  idle                         return to idle
+  quit                         exit
 
-Durata:
-  80f       = 80 frame effettivi
-  300ms     = millisecondi
-  300       = millisecondi, compatibilità col vecchio script
+Duration:
+  80f       = 80 actual frames
+  300ms     = milliseconds
+  300       = milliseconds, compatibility with the old script
 
-TX frame pannello→corpo:
+Panel→body TX frame:
   1 frame = {TX_FRAME_LEN} byte ≈ {TX_FRAME_TIME_MS:.2f} ms a {BAUD} baud.
 
-RX frame corpo→pannello:
+Body→panel RX frame:
   1 frame = {RX_FRAME_LEN} byte ≈ {RX_FRAME_TIME_MS:.2f} ms a {BAUD} baud.
 
-Frontale:
+Front panel:
   band, f, pmg, vm, sdx, power
   ul_press, ur_press, bl_press, br_press
   ul_left, ul_right, ur_left, ur_right, bl_left, bl_right, br_left, br_right
 
-Microfono:
+Microphone:
   mic_ptt, mic_ptt_hold, mic_up, mic_down, mic_mute
   mic_p1, mic_p2, mic_p3, mic_p4
   mic_0..mic_9, mic_star, mic_hash, mic_a, mic_b, mic_c, mic_d
@@ -2134,16 +2134,16 @@ Microfono:
 
 def print_list() -> None:
     groups = [
-        ("frontale", ["band", "f", "pmg", "vm", "sdx", "power"]),
+        ("front panel", ["band", "f", "pmg", "vm", "sdx", "power"]),
         ("knob press", ["ul_press", "ur_press", "bl_press", "br_press"]),
         ("encoder", ["ul_left", "ul_right", "ur_left", "ur_right", "bl_left", "bl_right", "br_left", "br_right"]),
-        ("microfono", [
+        ("microphone", [
             "mic_ptt", "mic_ptt_hold", "mic_up", "mic_down", "mic_mute",
             "mic_p1", "mic_p2", "mic_p3", "mic_p4",
             "mic_1", "mic_2", "mic_3", "mic_4", "mic_5", "mic_6", "mic_7", "mic_8", "mic_9",
             "mic_star", "mic_0", "mic_hash", "mic_a", "mic_b", "mic_c", "mic_d",
         ]),
-        ("microfono alt", sorted(n for n in COMMANDS if n.endswith("_alt"))),
+        ("alternate microphone", sorted(n for n in COMMANDS if n.endswith("_alt"))),
     ]
     for title, names in groups:
         print(f"{title}:")
@@ -2154,7 +2154,7 @@ def print_list() -> None:
 def run_named_command(tx: PanelTx, name_token: str, duration_token: Optional[str] = None, hold: bool = False) -> None:
     name = canon(name_token)
     if name not in COMMANDS:
-        print(f"comando sconosciuto: {name_token}; usa 'list'")
+        print(f"unknown command: {name_token}; use 'list'")
         return
 
     ops = COMMANDS[name]
@@ -2169,11 +2169,11 @@ def run_named_command(tx: PanelTx, name_token: str, duration_token: Optional[str
 
 def print_display(rx: Optional[BodyRx], raw: bool = False) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
     frame, ts, seen, data_seen, sync_losses = rx.snapshot()
     if frame is None:
-        print("[rx] nessun frame display ancora ricevuto. Controlla RX/GND e che il corpo stia trasmettendo.")
+        print("[rx] no display frame received yet. Check RX/GND and verify the body is transmitting.")
         print(f"     stats: frames={seen}, data={data_seen}, sync_loss={sync_losses}")
         return
     age = time.time() - ts if ts else -1
@@ -2182,7 +2182,7 @@ def print_display(rx: Optional[BodyRx], raw: bool = False) -> None:
         c = rx.counters()
         if c.get("menu_ignored", 0):
             extra = f", menu_ignored={c['menu_ignored']}"
-    print(f"[rx] ultimo frame display normale: {age:.2f}s fa; frames={seen}, data={data_seen}, sync_loss={sync_losses}{extra}")
+    print(f"[rx] last normal display frame: {age:.2f}s ago; frames={seen}, data={data_seen}, sync_loss={sync_losses}{extra}")
     print(decode_display_snapshot(frame, raw=raw))
 
 
@@ -2194,16 +2194,16 @@ def get_rx_frame(rx: Optional[BodyRx]) -> Tuple[Optional[bytes], Optional[float]
 
 def display_watchdiff(rx: Optional[BodyRx], base: Optional[bytes], seconds: float = 10.0, raw: bool = False) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
     if base is None:
         frame, ts, seen, data_seen, sync_losses = rx.snapshot()
         if frame is None:
-            print("[rx] nessun frame display da usare come riferimento")
+            print("[rx] no display frame available to use as a reference")
             return
         base = frame
-        print("[rx] riferimento temporaneo imparato dal frame corrente")
-    print(f"[rx] watchdiff per {seconds:.1f}s; Ctrl-C per interrompere")
+        print("[rx] temporary reference learned from the current frame")
+    print(f"[rx] watchdiff for {seconds:.1f}s; Ctrl-C to interrupt")
     end = time.monotonic() + seconds
     last: Optional[bytes] = None
     try:
@@ -2222,7 +2222,7 @@ def display_watchdiff(rx: Optional[BodyRx], base: Optional[bytes], seconds: floa
 
 def display_watch(rx: Optional[BodyRx], seconds: float = 10.0) -> None:
     if rx is None or not rx.enabled:
-        print("[rx] RX disabilitato")
+        print("[rx] RX disabled")
         return
     print(f"[rx] watch display per {seconds:.1f}s; Ctrl-C per interrompere")
     end = time.monotonic() + seconds
@@ -2367,7 +2367,7 @@ class SaveRecorder:
     def start(self, label: str = "", outdir: str = ".", rx: Optional[BodyRx] = None) -> Tuple[bool, str, dict]:
         with self.lock:
             if self.active:
-                return False, f"save già attivo: {self.root}", self._status_unlocked()
+                return False, f"save already active: {self.root}", self._status_unlocked()
             stamp = time.strftime("%Y%m%d_%H%M%S")
             clean = _save_safe_name(label or "session")
             root = os.path.abspath(os.path.join(outdir or ".", f"save_{stamp}_{clean}"))
@@ -2495,7 +2495,7 @@ class SaveRecorder:
     def stop(self) -> Tuple[bool, str, dict]:
         with self.lock:
             if not self.active or not self.root:
-                return False, "save non attivo", self._status_unlocked()
+                return False, "save not active", self._status_unlocked()
             root = self.root
             elapsed = None if self.started_at is None else max(0.0, time.time() - self.started_at)
             summary = {
@@ -2525,7 +2525,7 @@ class SaveRecorder:
                         arc = os.path.relpath(full, os.path.dirname(root))
                         zf.write(full, arc)
         except Exception as e:
-            return False, f"save stop: cartella salvata ma zip fallito: {e}; cartella={root}", self.status()
+            return False, f"save stop: folder saved but zip failed: {e}; folder={root}", self.status()
         return True, f"save stop: {root} ; zip={zip_path}", self.status()
 
 
@@ -2546,9 +2546,9 @@ def save_command(args: List[str], rx: Optional[BodyRx]) -> None:
         return
     st = SAVE_RECORDER.status()
     if st.get("active"):
-        print(f"[save] attivo: {st.get('root')} screens={st.get('screens')} commands={st.get('commands')} elapsed={st.get('elapsed_s'):.1f}s")
+        print(f"[save] active: {st.get('root')} screens={st.get('screens')} commands={st.get('commands')} elapsed={st.get('elapsed_s'):.1f}s")
     else:
-        print("[save] non attivo")
+        print("[save] not active")
 
 def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
     display_base: Optional[bytes] = None
@@ -2557,7 +2557,7 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
     display2_base_name = "base2"
 
     print_help()
-    print("\n[run] TX frame idle attivo. Se RX è collegato, usa 'display'.")
+    print("\n[run] TX idle frame active. If RX is connected, use 'display'.")
 
     while not tx.stop.is_set():
         try:
@@ -2574,7 +2574,7 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
         try:
             parts = shlex.split(line)
         except ValueError as e:
-            print(f"errore parsing: {e}")
+            print(f"parse error: {e}")
             continue
 
         cmd = parts[0].lower()
@@ -2599,7 +2599,7 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
                 continue
             if cmd == "rxstat":
                 if rx is None or not rx.enabled:
-                    print("[rx] RX disabilitato")
+                    print("[rx] RX disabled")
                 else:
                     frame, ts, seen, data_seen, sync_losses = rx.snapshot()
                     age = time.time() - ts if ts else None
@@ -2624,20 +2624,20 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
                 elif sub in ("learn", "base", "baseline", "mark", "ref"):
                     frame, ts, seen, menu_seen, sync_losses = get_rx_menu_frame(rx)
                     if frame is None:
-                        print("[rx] nessun frame display2/menu da salvare come riferimento")
+                        print("[rx] no display2/menu frame available to save as a reference")
                     else:
                         display2_base = frame
                         display2_base_name = args[1] if len(args) > 1 else "base2"
                         age = time.time() - ts if ts else -1
-                        print(f"[rx] riferimento display2 '{display2_base_name}' salvato; age={age:.2f}s, frames={seen}, menu={menu_seen}")
+                        print(f"[rx] display2 reference '{display2_base_name}' saved; age={age:.2f}s, frames={seen}, menu={menu_seen}")
                 elif sub in ("diff", "compare", "cmp"):
                     raw = len(args) > 1 and args[1].lower() in ("raw", "hex", "hexdump")
                     if display2_base is None:
-                        print("[rx] prima fai: display2 learn [nome]")
+                        print("[rx] first run: display2 learn [name]")
                     else:
                         frame, ts, seen, menu_seen, sync_losses = get_rx_menu_frame(rx)
                         if frame is None:
-                            print("[rx] nessun frame display2/menu corrente")
+                            print("[rx] no current display2/menu frame")
                         else:
                             age = time.time() - ts if ts else -1
                             print(f"[rx] display2 diff vs '{display2_base_name}'; age={age:.2f}s, frames={seen}, menu={menu_seen}")
@@ -2665,20 +2665,20 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
                 elif sub in ("learn", "base", "baseline", "mark", "ref"):
                     frame, ts, seen, data_seen, sync_losses = get_rx_frame(rx)
                     if frame is None:
-                        print("[rx] nessun frame display da salvare come riferimento")
+                        print("[rx] no display frame available to save as a reference")
                     else:
                         display_base = frame
                         display_base_name = args[1] if len(args) > 1 else "base"
                         age = time.time() - ts if ts else -1
-                        print(f"[rx] riferimento display '{display_base_name}' salvato; age={age:.2f}s, frames={seen}, data={data_seen}")
+                        print(f"[rx] display reference '{display_base_name}' saved; age={age:.2f}s, frames={seen}, data={data_seen}")
                 elif sub in ("diff", "compare", "cmp"):
                     raw = len(args) > 1 and args[1].lower() in ("raw", "hex", "hexdump")
                     if display_base is None:
-                        print("[rx] prima fai: display learn [nome]")
+                        print("[rx] first run: display learn [name]")
                     else:
                         frame, ts, seen, data_seen, sync_losses = get_rx_frame(rx)
                         if frame is None:
-                            print("[rx] nessun frame display corrente")
+                            print("[rx] no current display frame")
                         else:
                             age = time.time() - ts if ts else -1
                             print(f"[rx] diff vs '{display_base_name}'; age={age:.2f}s, frames={seen}, data={data_seen}")
@@ -2695,13 +2695,13 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
                 continue
             if cmd == "press":
                 if not args:
-                    print("uso: press <nome> [durata]")
+                    print("usage: press <name> [duration]")
                     continue
                 run_named_command(tx, args[0], args[1] if len(args) > 1 else None)
                 continue
             if cmd == "hold":
                 if not args:
-                    print("uso: hold <nome>")
+                    print("usage: hold <name>")
                     continue
                 run_named_command(tx, args[0], hold=True)
                 continue
@@ -2709,7 +2709,7 @@ def command_loop(tx: PanelTx, rx: Optional[BodyRx]) -> None:
             # Direct command: "band", "band 80f", "mic_5 300ms", etc.
             run_named_command(tx, cmd, args[0] if args else None)
         except Exception as e:
-            print(f"errore: {e}")
+            print(f"error: {e}")
 
 
 def main() -> int:
@@ -2717,8 +2717,8 @@ def main() -> int:
     ap.add_argument("--port", default="/dev/cu.usbserial-0001")
     ap.add_argument("--baud", type=int, default=BAUD)
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--no-rx", action="store_true", help="disabilita il thread RX display")
-    ap.add_argument("--no-ignore-menu", action="store_true", help="non filtrare i frame menu/configurazione dal display normale; display2 resta sempre disponibile")
+    ap.add_argument("--no-rx", action="store_true", help="disable the RX display thread")
+    ap.add_argument("--no-ignore-menu", action="store_true", help="do not filter menu/config frames from the normal display; display2 remains always available")
     args = ap.parse_args()
 
     try:
@@ -2735,13 +2735,13 @@ def main() -> int:
             dsrdtr=False,
         )
     except serial.SerialException as e:
-        print(f"Non riesco ad aprire {args.port}: {e}", file=sys.stderr)
+        print(f"Failed to open {args.port}: {e}", file=sys.stderr)
         return 1
 
     print(f"[open] {args.port} @ {args.baud} 8N1")
-    print(f"[info] TX frame {TX_FRAME_LEN} byte, nominale {1000.0 / TX_FRAME_TIME_MS:.1f} frame/s")
-    print(f"[info] RX frame {RX_FRAME_LEN} byte, nominale ≈ {1000.0 / RX_FRAME_TIME_MS:.1f} frame/s")
-    print("[safe] TX originale del frontalino scollegato dalla linea che stai pilotando.")
+    print(f"[info] TX frame {TX_FRAME_LEN} bytes, nominal {1000.0 / TX_FRAME_TIME_MS:.1f} frame/s")
+    print(f"[info] RX frame {RX_FRAME_LEN} bytes, nominal ≈ {1000.0 / RX_FRAME_TIME_MS:.1f} frame/s")
+    print("[safe] Original front-panel TX disconnected from the line you are driving.")
 
     tx = PanelTx(ser, verbose=args.verbose)
     tx_th = threading.Thread(target=tx.writer_loop, daemon=True)
@@ -3393,7 +3393,7 @@ setupKnobPress('blPressBtn','bl_press');
 setupKnobPress('brPressKnob','br_press');
 setupKnobPress('brPressBtn','br_press');
 function toast(msg){const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),900);}
-async function sendCmd(command,duration){if(!radioPowered){toast('radio spenta'); return;} const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,duration})}); const j=await r.json().catch(()=>({ok:false,error:'bad json'})); toast(j.ok?command:(j.error||'error'));}
+async function sendCmd(command,duration){if(!radioPowered){toast('radio off'); return;} const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,duration})}); const j=await r.json().catch(()=>({ok:false,error:'bad json'})); toast(j.ok?command:(j.error||'error'));}
 async function saveAction(action){const label='menu25'; const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,label})}); const j=await r.json().catch(()=>({ok:false,error:'bad json'})); toast(j.ok?(j.message||('save '+action)):(j.error||'save error')); updateSaveState(j.save||{});}
 function updateSaveState(save){const st=document.getElementById('saveState'); const a=!!(save&&save.active); const b1=document.getElementById('saveStartBtn'); const b2=document.getElementById('saveStopBtn'); if(b1) b1.classList.toggle('active',a); if(b2) b2.classList.toggle('active',a); if(st){ if(a){const sec=save.elapsed_s==null?'':(' '+Number(save.elapsed_s).toFixed(0)+'s'); st.textContent='REC '+(save.screens||0)+' screens / '+(save.commands||0)+' cmd'+sec;} else {st.textContent=save.zip_path?('saved '+save.zip_path):'save off';}}}
 async function sendDialCmd(command){
@@ -3405,7 +3405,7 @@ async function menuValueClick(){ await sendCmd('br_press'); }
 
 const heldCmds=new Set();
 async function holdCmd(command){
-  if(!radioPowered){toast('radio spenta'); return;}
+  if(!radioPowered){toast('radio off'); return;}
   if(heldCmds.has(command)) return;
   heldCmds.add(command);
   try{
@@ -3461,13 +3461,13 @@ async function powerStartFromUi(){
   if(powerBusy) return;
   powerBusy=true;
   applyPowerState({radio_powered:false,powering_on:true});
-  toast('accensione...');
+  toast('powering on...');
   try{
     const r=await fetch('/api/power_start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
     const j=await r.json().catch(()=>({ok:false,error:'bad json'}));
-    toast(j.ok?(j.message||'sequenza accensione inviata'):(j.error||'errore accensione'));
+    toast(j.ok?(j.message||'power-on sequence sent'):(j.error||'power-on error'));
   }catch(e){
-    toast('errore accensione');
+    toast('power-on error');
   }finally{
     powerBusy=false;
     try{ await poll(); }catch(_e){}
@@ -3502,15 +3502,15 @@ function setupPowerButton(id,command){
       return;
     }
     if(!radioPowered){
-      toast('tieni premuto POWER');
+      toast('hold POWER');
       return;
     }
     releaseCmd(command);
     if(dt>=thresholdMs){
-      // Il long-press reale spegne la radio. Lo stato OFF ora viene deciso
-      // dal watchdog RX: quando i frame smettono di arrivare, la UI diventa
-      // grigia e S torna LOW automaticamente.
-      toast('attendo stop RX...');
+      // The real long press powers the radio off. OFF state is now decided
+      // by the RX watchdog: when frames stop arriving, the UI turns grey and
+      // S returns LOW automatically.
+      toast('waiting for RX to stop...');
       setTimeout(async()=>{ try{ await poll(); }catch(_e){} },1200);
     }
   };
@@ -4103,8 +4103,8 @@ async function memoryRowClick(idx,slot){
     }
     await sleep(120);
   }
-  // Solo comando fisico: l'overlay azioni viene mostrato solo quando la
-  // radio invia davvero il frame F1 23 memory_select.
+  // Physical command only: show the action overlay only when the
+  // radio actually sends the F1 23 memory_select frame.
   await sendCmd('br_press','200ms');
 }
 
@@ -4151,9 +4151,9 @@ async function menuFullRowClick(idx,inert=false){
     if(diff===0){
       await sendCmd('br_press','200ms');
     } else {
-      // Menu azioni: nessuna selezione locale e nessuna raffica.
-      // Un click fuori selezione equivale a un solo scatto fisico;
-      // l'highlight cambia solo quando arriva il frame radio aggiornato.
+      // Action menu: no local selection and no burst commands.
+      // A click away from the current selection equals a single physical step;
+      // the highlight changes only when the updated radio frame arrives.
       const cmd=diff>0?'br_right':'br_left';
       await sendCmd(cmd,'5ms');
     }
@@ -4406,7 +4406,7 @@ class AudioStreamer:
 
     def subscribe(self) -> AudioClient:
         if not self.enabled:
-            raise RuntimeError("audio disabilitato")
+            raise RuntimeError("audio disabled")
         client = AudioClient(max_chunks=max(4, int(180 / self.chunk_ms)))
         with self.lock:
             self.clients.append(client)
@@ -4751,10 +4751,10 @@ class TxAudioSink:
 
     def begin(self) -> None:
         if not self.enabled:
-            raise RuntimeError("TX audio disabilitato")
+            raise RuntimeError("TX audio disabled")
         with self.lock:
             if self.active:
-                raise RuntimeError("TX audio già in uso da un altro browser")
+                raise RuntimeError("TX audio already in use by another browser")
         self._apply_alsa_speaker_volume()
         with self.lock:
             try:
@@ -4891,7 +4891,7 @@ class TxAudioSink:
             return
         with self.lock:
             if not self.active or self.proc is not proc or proc.stdin is None:
-                raise RuntimeError("TX audio non attivo")
+                raise RuntimeError("TX audio not active")
             if proc.poll() is not None:
                 extra = f": {self.last_alsa_message}" if self.last_alsa_message else ""
                 self.last_error = f"aplay exited with code {proc.returncode}{extra}"
@@ -4910,7 +4910,7 @@ class TxAudioSink:
         with self.lock:
             proc = self.proc
             if not self.active or proc is None:
-                raise RuntimeError("TX audio non attivo")
+                raise RuntimeError("TX audio not active")
             if proc.poll() is not None or proc.stdin is None:
                 extra = f": {self.last_alsa_message}" if self.last_alsa_message else ""
                 self.last_error = f"aplay exited with code {proc.returncode}{extra}"
@@ -5051,7 +5051,7 @@ def _ws_read_frame(handler: BaseHTTPRequestHandler) -> Optional[Tuple[int, bytes
             return None
         length = int.from_bytes(ext, "big")
     if length > 1024 * 1024:
-        raise RuntimeError("websocket frame troppo grande")
+        raise RuntimeError("websocket frame too large")
     mask = b""
     if masked:
         mask = _ws_read_exact(handler, 4)
@@ -8457,7 +8457,7 @@ class SerialMicPttController(BasePttController):
 
     def set_ptt(self, active: bool) -> None:
         if self.tx is None:
-            self.last_error = "TX seriale non disponibile"
+            self.last_error = "Serial TX not available"
             raise RuntimeError(self.last_error)
         if active:
             self.tx.named_hold("web_audio_ptt", "serial_mic_ptt", COMMANDS["mic_ptt_hold"])
@@ -8551,14 +8551,14 @@ def find_cm108_hidraw(audio_device: str) -> Tuple[Optional[str], str, List[dict]
         if len(matched) == 1:
             return matched[0]["hidraw"], f"auto: ALSA card {card} USB {card_key}", candidates
         if len(matched) > 1:
-            return matched[0]["hidraw"], f"auto: più HID sulla stessa scheda, uso {matched[0]['hidraw']}", candidates
+            return matched[0]["hidraw"], f"auto: multiple HID devices on the same card, using {matched[0]['hidraw']}", candidates
     if len(cmedia) == 1:
-        return cmedia[0]["hidraw"], "auto: unico C-Media hidraw trovato", candidates
+        return cmedia[0]["hidraw"], "auto: single C-Media hidraw device found", candidates
     if cmedia:
-        return None, "più C-Media hidraw trovati; usa --cm108-hidraw /dev/hidrawN", candidates
+        return None, "multiple C-Media hidraw devices found; use --cm108-hidraw /dev/hidrawN", candidates
     if len(candidates) == 1:
-        return candidates[0]["hidraw"], "auto: unico hidraw trovato, non verificato C-Media", candidates
-    return None, "nessun hidraw C-Media trovato", candidates
+        return candidates[0]["hidraw"], "auto: single hidraw device found, C-Media not verified", candidates
+    return None, "no C-Media hidraw device found", candidates
 
 
 class Cm108PttController(BasePttController):
@@ -8582,7 +8582,7 @@ class Cm108PttController(BasePttController):
     def _write(self, active: bool) -> None:
         if not self.hidraw:
             cand = "; ".join(f"{c['hidraw']} vid={c.get('vid') or '?'} pid={c.get('pid') or '?'} usb={c.get('usb_key') or '?'} {c.get('product') or ''}" for c in self.candidates)
-            self.last_error = (self.last_info or "hidraw non trovato") + (f"; candidati: {cand}" if cand else "")
+            self.last_error = (self.last_info or "hidraw not found") + (f"; candidates: {cand}" if cand else "")
             raise RuntimeError(self.last_error)
         mask = 1 << (self.gpio - 1)
         asserted = bool(active) ^ self.invert
@@ -8594,7 +8594,7 @@ class Cm108PttController(BasePttController):
             if n != len(report):
                 raise OSError(f"short write {n}/{len(report)}")
         except PermissionError as e:
-            self.last_error = f"permesso negato su {self.hidraw}: aggiungi una udev rule o prova sudo ({e})"
+            self.last_error = f"permission denied on {self.hidraw}: add a udev rule or try sudo ({e})"
             raise RuntimeError(self.last_error)
         except Exception as e:
             self.last_error = f"CM108 PTT write failed su {self.hidraw}: {e}"
@@ -8715,10 +8715,10 @@ EVENT_COUNT = 44474
 DURATION_US = 1877874
 SOURCE_START_MS = -9.853615151209056
 THRESHOLD_V = 1.65
-TAIL_START_INDEX = 7436      # delay lungo HIGH da 226.060 ms prima della coda continua
-TAIL_EDGE_INDEX = 7437       # qui inizierebbe la coda continua, con un fronte HIGH->LOW
-TAIL_EDGE_US = 1452096       # tempo dal primo LOW->HIGH fino alla coda continua
-CRITICAL_END_US = 1452096    # default: riproduce esatto fino a qui e lascia la linea HIGH
+TAIL_START_INDEX = 7436      # long HIGH delay at 226.060 ms before the continuous tail
+TAIL_EDGE_INDEX = 7437       # continuous tail would start here, with a HIGH->LOW edge
+TAIL_EDGE_US = 1452096       # time from first LOW->HIGH to the continuous tail
+CRITICAL_END_US = 1452096    # default: replay exactly up to here and leave the line HIGH
 _DELAYS_Z64 = """
 eNrt3U9OE1EcwPGZFijljygXkBBCkLBwoTslhiggcaHGROM1vII77+HOjQchBIkXYO/KAzjoTDJpqJQU2vm9+SwmHykUSIl835t5
 vDnfWcjyLPt79IqjWxwLxdEpH5sv7dScK4735dv15+W153TKozfk+V//8/zqY2drn6d6bGbI5/tcHI9fZdmXb3l2t/y41fL9V1kd
@@ -8745,7 +8745,7 @@ def load_delays() -> List[int]:
 
 
 def precise_sleep_us(us: int) -> None:
-    """Sleep abbastanza preciso per pause millisecondi; busy-wait solo negli ultimi 300 us."""
+    """Sleep with decent precision for millisecond pauses; busy-wait only in the last 300 us."""
     if us <= 0:
         return
     target = time.monotonic_ns() + us * 1000
@@ -8759,10 +8759,10 @@ def print_summary(delays: List[int]) -> None:
     print(f"[data] fronti incorporati: {EVENT_COUNT}")
     print(f"[data] durata CSV intera:  {DURATION_US/1000.0:.3f} ms")
     print(f"[data] start CSV:          {SOURCE_START_MS:.9f} ms")
-    print(f"[data] soglia originale:   {THRESHOLD_V:.3f} V")
-    print(f"[data] primo tratto:       HIGH per {delays[0]/1000.0:.3f} ms")
-    print(f"[data] startup critico:    fino a {CRITICAL_END_US/1000.0:.3f} ms, poi linea lasciata HIGH")
-    print(f"[data] coda continua CSV:  da {TAIL_EDGE_US/1000.0:.3f} a {DURATION_US/1000.0:.3f} ms")
+    print(f"[data] original threshold: {THRESHOLD_V:.3f} V")
+    print(f"[data] first segment:      HIGH for {delays[0]/1000.0:.3f} ms")
+    print(f"[data] critical startup:   up to {CRITICAL_END_US/1000.0:.3f} ms, then line left HIGH")
+    print(f"[data] CSV continuous tail: from {TAIL_EDGE_US/1000.0:.3f} to {DURATION_US/1000.0:.3f} ms")
     print(f"[data] min/max delay:      {min(delays)} us / {max(delays)} us")
 
 
@@ -8801,11 +8801,11 @@ def send_small_wave(pi, gpio: int, seq: List[Tuple[int, int]], invert: bool, ver
 
 
 def play_edge_stream_until(pi, gpio: int, delays: List[int], stop_us: int, args) -> int:
-    """Riproduce i delay dal t=0 fino a stop_us.
+    """Replay delays from t=0 up to stop_us.
 
-    I ritardi lunghi vengono fatti con write+sleep, le parti veloci con piccole
-    wave DMA. Al raggiungimento di stop_us non viene generato il fronte successivo:
-    la linea rimane nel livello corrente, che per la sequenza critica e' HIGH.
+    Long delays are handled with write+sleep, fast sections with small DMA
+    waves. When stop_us is reached, the next edge is not generated:
+    the line remains at the current level, which is HIGH for the critical sequence.
     """
     level = START_LEVEL
     t_us = 0
@@ -8823,16 +8823,16 @@ def play_edge_stream_until(pi, gpio: int, delays: List[int], stop_us: int, args)
         delay = int(delays[i])
         remaining = stop_us - t_us
         if delay > remaining:
-            # Ultimo tratto parziale: mantieni il livello e fermati senza togglare.
+            # Final partial segment: keep the level and stop without toggling.
             flush_small()
             pi.write(gpio, level ^ (1 if args.invert else 0))
             if args.verbose:
-                print(f"[hold] livello {level} per {remaining} us, stop senza fronte")
+                print(f"[hold] level {level} for {remaining} us, stopping without edge")
             precise_sleep_us(remaining)
             t_us += remaining
             break
 
-        # Se e' una pausa lunga, conviene non sprecarla dentro pigpio wave.
+        # For a long pause, do not waste pigpio wave resources on it.
         if delay >= args.long_delay_us:
             flush_small()
             pi.write(gpio, level ^ (1 if args.invert else 0))
@@ -8851,14 +8851,14 @@ def play_edge_stream_until(pi, gpio: int, delays: List[int], stop_us: int, args)
         i += 1
 
     flush_small()
-    # Lascia il livello corrente coerente. Per mode=startup lo forziamo HIGH dopo.
+    # Leave the current level consistent. For mode=startup we force it HIGH later.
     pi.write(gpio, level ^ (1 if args.invert else 0))
     return t_us
 
 
 def build_uart_wave_for_bytes(data: bytes, bit_us: int = 2, gap_us: int = 800) -> List[Tuple[int, int]]:
-    """Costruisce un'onda UART 8N1 TTL idle HIGH come coppie livello/durata.
-    Usato solo per la coda facoltativa, non per la parte critica da CSV.
+    """Build an idle-HIGH TTL UART 8N1 waveform as level/duration pairs.
+    Used only for the optional tail, not for the critical CSV section.
     """
     bits: List[int] = []
     for b in data:
@@ -8867,7 +8867,7 @@ def build_uart_wave_for_bytes(data: bytes, bit_us: int = 2, gap_us: int = 800) -
             bits.append((b >> n) & 1)
         bits.append(1)  # stop
     bits.extend([1] * max(1, gap_us // bit_us))
-    # comprime bit consecutivi uguali
+    # Compress consecutive identical bits.
     out: List[Tuple[int, int]] = []
     cur = bits[0]
     count = 0
@@ -8882,7 +8882,7 @@ def build_uart_wave_for_bytes(data: bytes, bit_us: int = 2, gap_us: int = 800) -
     return out
 
 
-# Primo frame della coda continua decodificato dal CSV, 210 byte, byte +15 = 0x30.
+# First frame of the continuous tail decoded from the CSV, 210 bytes, byte +15 = 0x30.
 TAIL_FRAME0_HEX = (
     "80 00 00 00 00 00 00 00 00 00 00 00 00 7c 7b 30 "
     "00 00 00 0f "
@@ -8893,23 +8893,23 @@ TAIL_FRAME0_HEX = (
 def tail_frame0() -> bytes:
     bs = bytes.fromhex(TAIL_FRAME0_HEX)
     if len(bs) != 210:
-        raise RuntimeError(f"TAIL_FRAME0 len={len(bs)} invece di 210")
+        raise RuntimeError(f"TAIL_FRAME0 len={len(bs)} instead of 210")
     return bs
 
 
 def play_tail_repeated(pi, gpio: int, args) -> None:
     frame = tail_frame0()
     seq = build_uart_wave_for_bytes(frame, bit_us=2, gap_us=args.tail_gap_us)
-    # La wave di un frame solo e' piccola; la ripetiamo da Python. Non e' bit-identica
-    # alla coda CSV, ma evita i 37000 fronti che saturano i CB di pigpio.
+    # The single-frame wave is small; repeat it from Python. It is not bit-identical
+    # to the CSV tail, but avoids the 37000 edges that saturate pigpio CBs.
     repeats = max(1, int(args.tail_ms / ((4200 + args.tail_gap_us) / 1000.0)))
-    print(f"[tail] ripeto frame GPIO UART-like: {repeats} volte, gap={args.tail_gap_us} us")
+    print(f"[tail] repeating UART-like GPIO frame: {repeats} times, gap={args.tail_gap_us} us")
     for k in range(repeats):
         send_small_wave(pi, gpio, seq, args.invert, False)
 
 
 def release_gpio_hiz(pi, gpio: int) -> None:
-    """Rilascia il GPIO come se fosse staccato: input, pull-up/down disabilitati."""
+    """Release the GPIO as if disconnected: input, pull-up/down disabled."""
     try:
         pi.set_pull_up_down(gpio, pigpio.PUD_OFF)
     except Exception:
@@ -8924,17 +8924,17 @@ def play(args) -> int:
         print("[stop] analyze only")
         return 0
     if pigpio is None:
-        print("[error] modulo pigpio non trovato: ../venv/bin/pip install pigpio", file=sys.stderr)
+        print("[error] pigpio module not found: ../venv/bin/pip install pigpio", file=sys.stderr)
         return 2
     pi = pigpio.pi()
     if not pi.connected:
-        print("[error] pigpiod non raggiungibile. Avvia: sudo pigpiod -s 1", file=sys.stderr)
+        print("[error] pigpiod not reachable. Start it with: sudo pigpiod -s 1", file=sys.stderr)
         return 2
 
     try:
         pi.set_mode(args.gpio, pigpio.OUTPUT)
         pi.wave_clear()
-        # Prima del t=0 il CSV e' LOW, poi il primo evento e' LOW->HIGH.
+        # Before t=0 the CSV is LOW, then the first event is LOW->HIGH.
         pi.write(args.gpio, 0 if not args.invert else 1)
         time.sleep(args.pre_idle_ms / 1000.0)
 
@@ -8945,14 +8945,14 @@ def play(args) -> int:
         elif args.mode == "custom":
             stop_us = int(args.stop_ms * 1000)
         else:
-            print(f"[error] mode sconosciuto: {args.mode}", file=sys.stderr)
+            print(f"[error] unknown mode: {args.mode}", file=sys.stderr)
             return 2
 
-        print("[play] START ORA: t=0 = primo LOW->HIGH CH2")
+        print("[play] START NOW: t=0 = first LOW->HIGH on CH2")
         start = time.monotonic_ns()
         elapsed_us = play_edge_stream_until(pi, args.gpio, delays, stop_us, args)
 
-        # Per startup, non generare il fronte HIGH->LOW della coda: resta in idle HIGH.
+        # For startup, do not generate the tail HIGH->LOW edge: stay in idle HIGH.
         if args.leave_high:
             pi.write(args.gpio, 1 if not args.invert else 0)
 
@@ -8962,20 +8962,20 @@ def play(args) -> int:
                 pi.write(args.gpio, 1 if not args.invert else 0)
 
         real_ms = (time.monotonic_ns() - start) / 1_000_000.0
-        print(f"[play] fine: sequenza temporale riprodotta fino a {elapsed_us/1000.0:.3f} ms; tempo reale {real_ms:.3f} ms")
+        print(f"[play] done: replayed timeline up to {elapsed_us/1000.0:.3f} ms; real time {real_ms:.3f} ms")
         if not args.tail_repeated:
-            print("[note] coda continua finale NON inviata: per inviarla in forma compatta usa --tail-repeated")
+            print("[note] final continuous tail NOT sent: use --tail-repeated to send it in compact form")
 
         if args.release_input:
             release_gpio_hiz(pi, args.gpio)
-            print(f"[gpio] GPIO{args.gpio} rilasciato: INPUT, pull-up/down OFF = alta impedenza")
+            print(f"[gpio] GPIO{args.gpio} released: INPUT, pull-up/down OFF = high impedance")
         else:
-            print(f"[gpio] GPIO{args.gpio} lasciato come OUTPUT livello {'HIGH' if args.leave_high else 'corrente'}")
+            print(f"[gpio] GPIO{args.gpio} left as OUTPUT level {'HIGH' if args.leave_high else 'current'}")
         return 0
     finally:
         try:
             pi.wave_clear()
-            # In caso di eccezione, se richiesto, prova comunque a rilasciare il pin.
+            # If an exception occurs, still try to release the pin when requested.
             if 'args' in locals() and getattr(args, 'release_input', False):
                 try:
                     release_gpio_hiz(pi, args.gpio)
@@ -8990,12 +8990,12 @@ def play(args) -> int:
 def gpio_write_once(gpio: int, level: int) -> Tuple[bool, str]:
     """Write a BCM GPIO level through pigpio and return (ok, message)."""
     if gpio is None:
-        return True, "gpio non configurato"
+        return True, "GPIO not configured"
     if pigpio is None:
-        return False, "modulo pigpio non trovato: ../venv/bin/pip install pigpio"
+        return False, "pigpio module not found: ../venv/bin/pip install pigpio"
     pi = pigpio.pi()
     if not pi.connected:
-        return False, "pigpiod non raggiungibile. Avvia: sudo pigpiod -s 1"
+        return False, "pigpiod not reachable. Start it with: sudo pigpiod -s 1"
     try:
         pi.set_mode(int(gpio), pigpio.OUTPUT)
         pi.write(int(gpio), 1 if int(level) else 0)
@@ -9048,7 +9048,7 @@ class WebContext:
         self.powering_on = False
         self.rx_power_timeout_s = max(0.2, float(rx_power_timeout_s or 1.2))
         self.power_lock = threading.Lock()
-        self.power_message = "radio attiva" if self.radio_powered else "radio spenta"
+        self.power_message = "radio on" if self.radio_powered else "radio off"
         self._uart_usb_selected: Optional[bool] = None
         self._power_watchdog_stop = threading.Event()
         self._web_html = build_web_html(self.decode_enabled)
@@ -9099,13 +9099,13 @@ class WebContext:
                 self._uart_usb_selected = bool(self.radio_powered)
             self.power_message = msg if ok else msg
             if ok and self.radio_powered:
-                print(f"[power] radio già attiva: S GPIO{self.uart_select_gpio}=HIGH, TX USB selezionato")
+                print(f"[power] radio already on: S GPIO{self.uart_select_gpio}=HIGH, TX USB selected")
             elif ok:
-                print(f"[power] radio spenta: S GPIO{self.uart_select_gpio}=LOW, selezionata linea GPIO replay")
+                print(f"[power] radio off: S GPIO{self.uart_select_gpio}=LOW, GPIO replay path selected")
             else:
-                print(f"[power] ATTENZIONE: non riesco a impostare S GPIO{self.uart_select_gpio}: {msg}", file=sys.stderr)
+                print(f"[power] WARNING: failed to set S GPIO{self.uart_select_gpio}: {msg}", file=sys.stderr)
         if self.tx is not None:
-            self.tx.set_enabled(bool(self.radio_powered or self.demo), "stato iniziale radio")
+            self.tx.set_enabled(bool(self.radio_powered or self.demo), "initial radio state")
         self._power_watchdog_thread = threading.Thread(target=self._power_watchdog_loop, name="power-watchdog", daemon=True)
         self._power_watchdog_thread.start()
 
@@ -9717,7 +9717,7 @@ class WebContext:
             except Exception:
                 pass
             try:
-                self.tx.set_enabled(False, reason or "radio spenta")
+                self.tx.set_enabled(False, reason or "radio off")
             except Exception:
                 pass
         # If browser TX audio/PTT was active, force it off too.  RX browser audio
@@ -9737,7 +9737,7 @@ class WebContext:
         """Allow normal continuous TX after RX frames prove the radio is alive."""
         if self.tx is not None:
             try:
-                self.tx.set_enabled(True, reason or "radio accesa")
+                self.tx.set_enabled(True, reason or "radio on")
             except Exception:
                 pass
 
@@ -9775,31 +9775,31 @@ class WebContext:
             was = bool(self.radio_powered)
             if alive and not was:
                 self.radio_powered = True
-                self.power_message = f"radio accesa: RX frame attivi ({frames})"
+                self.power_message = f"radio on: RX frames active ({frames})"
                 changed = True
             elif (not alive) and was and not self.powering_on:
                 self.radio_powered = False
                 if age is None:
-                    self.power_message = "radio spenta: nessun frame RX"
+                    self.power_message = "radio off: no RX frames"
                 else:
-                    self.power_message = f"radio spenta: RX assente da {age:.1f}s"
+                    self.power_message = f"radio off: RX missing for {age:.1f}s"
                 changed = True
 
         if changed:
             if alive:
                 ok, msg = self._set_uart_select_usb(True)
-                self._handle_radio_power_alive("RX frame rilevati")
+                self._handle_radio_power_alive("RX frames detected")
                 if ok:
-                    print(f"[power] RX frame rilevati: radio ON, S GPIO{self.uart_select_gpio}=HIGH, TX continuo ON")
+                    print(f"[power] RX frames detected: radio ON, S GPIO{self.uart_select_gpio}=HIGH, continuous TX ON")
                 else:
-                    print(f"[power] errore selezione TX USB dopo RX alive: {msg}", file=sys.stderr)
+                    print(f"[power] TX USB selection error after RX alive: {msg}", file=sys.stderr)
             else:
-                self._handle_radio_power_lost("RX fermo")
+                self._handle_radio_power_lost("RX stopped")
                 ok, msg = self._set_uart_select_usb(False)
                 if ok:
-                    print(f"[power] RX fermo: radio OFF, S GPIO{self.uart_select_gpio}=LOW, TX continuo OFF")
+                    print(f"[power] RX stopped: radio OFF, S GPIO{self.uart_select_gpio}=LOW, continuous TX OFF")
                 else:
-                    print(f"[power] errore isolamento TX USB dopo RX stop: {msg}", file=sys.stderr)
+                    print(f"[power] TX USB isolation error after RX stop: {msg}", file=sys.stderr)
         return alive
 
     def _power_watchdog_loop(self) -> None:
@@ -9819,22 +9819,22 @@ class WebContext:
           S HIGH -> USB-TTL TX source selected
         """
         if self.uart_select_gpio is None:
-            return True, "S GPIO non configurato"
+            return True, "S GPIO not configured"
         usb_enabled = bool(usb_enabled)
         if self._uart_usb_selected is usb_enabled:
             return True, (
-                f"S GPIO{self.uart_select_gpio}=HIGH, TX USB già selezionato"
+                f"S GPIO{self.uart_select_gpio}=HIGH, TX USB already selected"
                 if usb_enabled else
-                f"S GPIO{self.uart_select_gpio}=LOW, replay GPIO già selezionato"
+                f"S GPIO{self.uart_select_gpio}=LOW, GPIO replay already selected"
             )
         level = 1 if usb_enabled else 0
         ok, msg = gpio_write_once(int(self.uart_select_gpio), level)
         if ok:
             self._uart_usb_selected = usb_enabled
             self.power_message = (
-                f"S GPIO{self.uart_select_gpio}=HIGH, TX USB selezionato"
+                f"S GPIO{self.uart_select_gpio}=HIGH, TX USB selected"
                 if usb_enabled else
-                f"S GPIO{self.uart_select_gpio}=LOW, replay GPIO selezionato"
+                f"S GPIO{self.uart_select_gpio}=LOW, GPIO replay selected"
             )
         else:
             self.power_message = msg
@@ -9844,11 +9844,11 @@ class WebContext:
         """Run the validated GPIO CH2 power-on sequence, then reconnect USB TX."""
         with self.power_lock:
             if self.radio_powered:
-                return True, "radio già attiva", self.power_status()
+                return True, "radio already on", self.power_status()
             if self.powering_on:
-                return False, "accensione già in corso", self.power_status()
+                return False, "power-on already in progress", self.power_status()
             self.powering_on = True
-            self.power_message = "accensione: seleziono replay GPIO"
+            self.power_message = "power on: selecting GPIO replay"
 
         try:
             if self.tx is not None:
@@ -9857,7 +9857,7 @@ class WebContext:
                 except Exception:
                     pass
                 try:
-                    self.tx.set_enabled(False, "preparo replay accensione")
+                    self.tx.set_enabled(False, "preparing power-on replay")
                 except Exception:
                     pass
 
@@ -9866,15 +9866,15 @@ class WebContext:
                 return False, msg, self.power_status()
 
             if self.power_gpio is None:
-                return False, "GPIO replay non configurato", self.power_status()
+                return False, "GPIO replay not configured", self.power_status()
 
-            self.power_message = f"accensione: replay CH2 su GPIO{self.power_gpio}"
+            self.power_message = f"power on: replaying CH2 on GPIO{self.power_gpio}"
             ok, msg = run_embedded_power_replay(int(self.power_gpio), tail_repeated=True, verbose=False)
             if not ok:
                 self.power_message = msg
                 return False, msg, self.power_status()
 
-            self.power_message = "accensione: riconnetto TX USB e attendo frame RX"
+            self.power_message = "power on: reconnecting TX USB and waiting for RX frames"
             ok, msg = self._set_uart_select_usb(True)
             if not ok:
                 return False, msg, self.power_status()
@@ -9882,21 +9882,21 @@ class WebContext:
                 # The radio has just been woken electrically; resume the normal
                 # 210-byte idle frame stream immediately, then the RX watchdog
                 # will confirm power as soon as display frames arrive.
-                self.tx.set_enabled(True, "dopo replay accensione")
+                self.tx.set_enabled(True, "after power-on replay")
 
             deadline = time.time() + 3.0
             while time.time() < deadline:
                 if self._refresh_radio_power_from_rx():
                     with self.power_lock:
-                        self.power_message = "radio accesa: frame RX ricevuti"
+                        self.power_message = "radio on: RX frames received"
                     return True, self.power_message, self.power_status()
                 time.sleep(0.05)
 
             with self.power_lock:
-                self.power_message = "sequenza accensione inviata; in attesa di frame RX"
+                self.power_message = "power-on sequence sent; waiting for RX frames"
             return True, self.power_message, self.power_status()
         except Exception as e:
-            self.power_message = f"errore accensione: {e}"
+            self.power_message = f"power-on error: {e}"
             return False, self.power_message, self.power_status()
         finally:
             with self.power_lock:
@@ -9907,16 +9907,16 @@ class WebContext:
         self._refresh_radio_power_from_rx()
         alive, age, frames = self._rx_power_info()
         if alive:
-            return True, "radio ancora attiva: frame RX presenti", self.power_status()
+            return True, "radio still on: RX frames present", self.power_status()
         with self.power_lock:
             self.radio_powered = False
             self.powering_on = False
-            self.power_message = "radio spenta: RX assente, isolo TX USB"
-        self._handle_radio_power_lost("radio spenta manuale/watchdog")
+            self.power_message = "radio off: RX missing, isolating TX USB"
+        self._handle_radio_power_lost("radio off manual/watchdog")
         ok, msg = self._set_uart_select_usb(False)
         if not ok:
             return False, msg, self.power_status()
-        return True, "radio spenta da watchdog RX; S LOW, USB TX isolato", self.power_status()
+        return True, "radio turned off by RX watchdog; S LOW, USB TX isolated", self.power_status()
 
     def power_status(self) -> dict:
         alive, age, frames = self._rx_power_info()
@@ -9946,12 +9946,12 @@ class WebContext:
     def pulse_command(self, name: str, duration: Optional[str] = None) -> Tuple[bool, str]:
         self._refresh_radio_power_from_rx()
         if self.tx is None:
-            return False, "TX non disponibile in modalità demo/no-tx"
+            return False, "TX not available in demo/no-tx mode"
         c = canon(name)
         if c not in COMMANDS:
-            return False, f"comando sconosciuto: {name}"
+            return False, f"unknown command: {name}"
         if not self.radio_powered:
-            return False, "radio spenta: tieni premuto POWER per accendere"
+            return False, "radio off: hold POWER to turn it on"
         self._track_menu_command(c)
         frames = parse_duration_token(duration, default_frames_for(c)) if duration else default_frames_for(c)
         self.tx.pulse(c, COMMANDS[c], frames)
@@ -9960,9 +9960,9 @@ class WebContext:
     def toggle_ptt(self) -> Tuple[bool, str, bool]:
         self._refresh_radio_power_from_rx()
         if not self.radio_powered:
-            return False, "radio spenta", self.ptt_latched
+            return False, "radio off", self.ptt_latched
         if self.ptt is None:
-            return False, "PTT non configurato", self.ptt_latched
+            return False, "PTT not configured", self.ptt_latched
         try:
             if self.ptt_latched:
                 self.ptt.set_ptt(False)
@@ -9977,14 +9977,14 @@ class WebContext:
     def start_tx_audio_session(self) -> None:
         self._refresh_radio_power_from_rx()
         if not self.radio_powered:
-            raise RuntimeError("radio spenta")
+            raise RuntimeError("radio off")
         if self.tx_audio is None:
-            raise RuntimeError("TX audio non configurato")
+            raise RuntimeError("TX audio not configured")
         if self.ptt is None:
-            raise RuntimeError("PTT non configurato")
+            raise RuntimeError("PTT not configured")
         with self.tx_audio_lock:
             if self.tx_audio_active:
-                raise RuntimeError("TX audio già attivo")
+                raise RuntimeError("TX audio already active")
             self.tx_audio.begin()
             try:
                 self.ptt.set_ptt(True)
@@ -9995,7 +9995,7 @@ class WebContext:
 
     def write_tx_audio(self, data: bytes) -> None:
         if self.tx_audio is None:
-            raise RuntimeError("TX audio non configurato")
+            raise RuntimeError("TX audio not configured")
         self.tx_audio.write(data)
 
     def stop_tx_audio_session(self) -> None:
@@ -10013,40 +10013,40 @@ class WebContext:
     def hold_command(self, name: str) -> Tuple[bool, str]:
         self._refresh_radio_power_from_rx()
         if self.tx is None:
-            return False, "TX non disponibile"
+            return False, "TX not available"
         c = canon(name)
         if c not in COMMANDS:
-            return False, f"comando sconosciuto: {name}"
+            return False, f"unknown command: {name}"
         if not self.radio_powered:
-            return False, "radio spenta: tieni premuto POWER per accendere"
+            return False, "radio off: hold POWER to turn it on"
         self.tx.hold(c, COMMANDS[c])
         return True, f"hold {c}"
 
     def named_hold_command(self, name: str) -> Tuple[bool, str]:
         self._refresh_radio_power_from_rx()
         if self.tx is None:
-            return False, "TX non disponibile"
+            return False, "TX not available"
         c = canon(name)
         if c not in COMMANDS:
-            return False, f"comando sconosciuto: {name}"
+            return False, f"unknown command: {name}"
         if not self.radio_powered:
-            return False, "radio spenta: tieni premuto POWER per accendere"
+            return False, "radio off: hold POWER to turn it on"
         self.tx.named_hold(f"web_button_{c}", c, COMMANDS[c])
         return True, f"hold {c}"
 
     def clear_named_hold_command(self, name: str) -> Tuple[bool, str]:
         if self.tx is None:
-            return False, "TX non disponibile"
+            return False, "TX not available"
         c = canon(name)
         if c not in COMMANDS:
-            return False, f"comando sconosciuto: {name}"
+            return False, f"unknown command: {name}"
         self.tx.clear_named_hold(f"web_button_{c}")
         return True, f"release {c}"
 
     def save_action(self, action: str, label: str = "session", outdir: str = ".") -> Tuple[bool, str, dict]:
         rec = globals().get("SAVE_RECORDER")
         if rec is None:
-            return False, "save recorder non disponibile", {"active": False}
+            return False, "save recorder not available", {"active": False}
         a = (action or "status").strip().lower()
         if a in ("start", "begin", "on"):
             return rec.start(label=label or "session", outdir=outdir or ".", rx=self.rx)
@@ -10158,7 +10158,7 @@ def _web_console_loop(rx: Optional[BodyRx], httpd: ThreadingHTTPServer) -> None:
         try:
             parts = shlex.split(line)
         except ValueError as e:
-            print(f"[console] errore parsing: {e}")
+            print(f"[console] parse error: {e}")
             continue
         cmd = parts[0].lower()
         args = parts[1:]
@@ -10172,55 +10172,55 @@ def _web_console_loop(rx: Optional[BodyRx], httpd: ThreadingHTTPServer) -> None:
         if cmd == "save":
             save_command(args, rx)
             continue
-        print("[console] comando non gestito qui. Usa la GUI per i comandi radio, oppure: save start/stop/status, quit")
+        print("[console] command not handled here. Use the GUI for radio commands, or: save start/stop/status, quit")
 
 def web_main() -> int:
     ap = argparse.ArgumentParser(description="FTM-150 web panel GUI - v51 fixes live menu rendering and labels")
-    ap.add_argument("--port", default="/dev/ttyUSB0", help="porta seriale radio")
+    ap.add_argument("--port", default="/dev/ttyUSB0", help="radio serial port")
     ap.add_argument("--baud", type=int, default=BAUD)
-    ap.add_argument("--host", default="0.0.0.0", help="host web; default 0.0.0.0 = accessibile dalla LAN")
+    ap.add_argument("--host", default="0.0.0.0", help="web host; default 0.0.0.0 = reachable from the LAN")
     ap.add_argument("--web-port", type=int, default=8080)
-    ap.add_argument("--demo", action="store_true", help="avvia solo la GUI senza seriale/radio")
-    ap.add_argument("--no-rx", action="store_true", help="non avviare lettura display RX")
-    ap.add_argument("--no-tx", action="store_true", help="non inviare frame pannello->corpo")
+    ap.add_argument("--demo", action="store_true", help="start only the GUI without serial/radio")
+    ap.add_argument("--no-rx", action="store_true", help="do not start RX display reading")
+    ap.add_argument("--no-tx", action="store_true", help="do not send panel->body frames")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--verbose-http", action="store_true")
-    ap.add_argument("--decode", action="store_true", help="mostra il pannello Decode/Save nella GUI e abilita il decode human nello stato web")
-    ap.add_argument("--ssl-cert", default=None, help="certificato TLS PEM per abilitare HTTPS/WSS")
-    ap.add_argument("--ssl-key", default=None, help="chiave TLS PEM per abilitare HTTPS/WSS")
-    ap.add_argument("--no-audio", action="store_true", help="disabilita lo stream audio RX nel browser")
-    ap.add_argument("--audio-device", default="plughw:0,0", help="dispositivo ALSA di cattura RX, es. plughw:0,0 oppure hw:0,0")
-    ap.add_argument("--audio-rate", type=int, default=48000, help="sample rate audio RX PCM verso browser")
-    ap.add_argument("--audio-chunk-ms", type=int, default=10, help="dimensione chunk audio RX HTTP in millisecondi")
-    ap.add_argument("--audio-buffer-time", type=int, default=50000, help="ALSA RX buffer-time in microsecondi")
-    ap.add_argument("--audio-period-time", type=int, default=10000, help="ALSA RX period-time in microsecondi")
-    ap.add_argument("--rx-alsa-card", default="0", help="card ALSA per impostare Mic/AGC della cattura RX, default 0")
-    ap.add_argument("--rx-alsa-mic-volume", type=int, default=45, help="imposta il mixer ALSA 'Mic' a questa percentuale quando parte RX audio, default 45")
-    ap.add_argument("--rx-alsa-agc-off", action="store_true", default=True, help="spegne il controllo ALSA 'Auto Gain Control' quando parte RX audio; default attivo")
-    ap.add_argument("--rx-alsa-agc-on", dest="rx_alsa_agc_off", action="store_false", help="lascia acceso il controllo ALSA 'Auto Gain Control' della cattura RX")
-    ap.add_argument("--no-tx-audio", action="store_true", help="disabilita TX audio dal microfono del browser")
-    ap.add_argument("--tx-audio-device", default="plughw:0,0", help="dispositivo ALSA playback TX; default plughw:0,0")
-    ap.add_argument("--tx-audio-rate", type=int, default=48000, help="sample rate audio TX PCM dal browser verso la CM108")
-    ap.add_argument("--tx-playback-channels", type=int, choices=(1, 2), default=2, help="canali ALSA playback TX; default 2 duplica il mono browser su L+R")
-    ap.add_argument("--tx-aplay-verbose", action="store_true", help="abilita output verbose di aplay nella diagnostica GUI")
-    ap.add_argument("--tx-audio-buffer-time", type=int, default=50000, help="ALSA TX buffer-time in microsecondi")
-    ap.add_argument("--tx-audio-period-time", type=int, default=10000, help="ALSA TX period-time in microsecondi")
-    ap.add_argument("--tx-output-gain", type=float, default=1.0, help="guadagno fisso lato Raspberry prima di aplay, 1.0 = invariato; default v45 bilanciato per voce su porta DATA")
-    ap.add_argument("--tx-agc", action="store_true", help="abilita AGC/normalizzazione TX lato Raspberry; default disabilitato per evitare distorsione")
-    ap.add_argument("--tx-agc-target", type=float, default=0.60, help="picco target AGC TX, 0.60 = margine anti-distorsione")
-    ap.add_argument("--tx-agc-max-boost", type=float, default=10.0, help="boost massimo AGC TX lato Raspberry")
-    ap.add_argument("--tx-alsa-card", default="0", help="card ALSA per impostare Speaker, default 0")
-    ap.add_argument("--tx-alsa-speaker-volume", type=int, default=90, help="imposta il mixer ALSA 'Speaker' a questa percentuale quando parte il TX, default 90")
-    ap.add_argument("--tx-ptt-lead-ms", type=int, default=120, help="attesa fra PTT ON e invio audio microfono")
-    ap.add_argument("--tx-ptt-tail-ms", type=int, default=80, help="coda silenziosa prima di rilasciare il PTT")
-    ap.add_argument("--tx-ptt-mode", choices=("cm108", "serial", "none"), default="serial", help="PTT usato dal TX audio: cm108=GPIO della scheda DATA, serial=vecchio PTT microfono, none=solo audio")
-    ap.add_argument("--cm108-hidraw", default="auto", help="/dev/hidrawN della CM108/CM119; default auto in base a --tx-audio-device")
-    ap.add_argument("--cm108-gpio", type=int, default=3, help="GPIO CM108/CM119 usato per PTT; tipico AllStar/Direwolf = 3")
-    ap.add_argument("--cm108-ptt-invert", action="store_true", help="inverte la logica HID GPIO se il tuo interfaccia richiede 0 per trasmettere")
-    ap.add_argument("--power-gpio", type=int, default=18, help="GPIO BCM che riproduce CH2/pin6 per accendere la radio; default 18")
-    ap.add_argument("--uart-select-gpio", type=int, default=23, help="GPIO BCM collegato a S del 74LVC157A: LOW=replay GPIO, HIGH=TX USB; default 23")
-    ap.add_argument("--radio-start-on", action="store_true", help="hint iniziale: avvia la GUI come se la radio fosse già accesa; poi decide il watchdog RX")
-    ap.add_argument("--rx-power-timeout", type=float, default=1.2, help="secondi senza frame RX validi prima di considerare la radio spenta; default 1.2")
+    ap.add_argument("--decode", action="store_true", help="show the Decode/Save panel in the GUI and enable human decode in the web state")
+    ap.add_argument("--ssl-cert", default=None, help="TLS PEM certificate to enable HTTPS/WSS")
+    ap.add_argument("--ssl-key", default=None, help="TLS PEM key to enable HTTPS/WSS")
+    ap.add_argument("--no-audio", action="store_true", help="disable RX audio streaming in the browser")
+    ap.add_argument("--audio-device", default="plughw:0,0", help="RX capture ALSA device, e.g. plughw:0,0 or hw:0,0")
+    ap.add_argument("--audio-rate", type=int, default=48000, help="RX PCM audio sample rate toward the browser")
+    ap.add_argument("--audio-chunk-ms", type=int, default=10, help="RX HTTP audio chunk size in milliseconds")
+    ap.add_argument("--audio-buffer-time", type=int, default=50000, help="ALSA RX buffer-time in microseconds")
+    ap.add_argument("--audio-period-time", type=int, default=10000, help="ALSA RX period-time in microseconds")
+    ap.add_argument("--rx-alsa-card", default="0", help="ALSA card used to configure Mic/AGC for RX capture, default 0")
+    ap.add_argument("--rx-alsa-mic-volume", type=int, default=45, help="set the ALSA 'Mic' mixer to this percentage when RX audio starts, default 45")
+    ap.add_argument("--rx-alsa-agc-off", action="store_true", default=True, help="turn off the ALSA 'Auto Gain Control' control when RX audio starts; default enabled")
+    ap.add_argument("--rx-alsa-agc-on", dest="rx_alsa_agc_off", action="store_false", help="leave the ALSA 'Auto Gain Control' control enabled for RX capture")
+    ap.add_argument("--no-tx-audio", action="store_true", help="disable TX audio from the browser microphone")
+    ap.add_argument("--tx-audio-device", default="plughw:0,0", help="TX playback ALSA device; default plughw:0,0")
+    ap.add_argument("--tx-audio-rate", type=int, default=48000, help="TX PCM audio sample rate from the browser toward the CM108")
+    ap.add_argument("--tx-playback-channels", type=int, choices=(1, 2), default=2, help="TX playback ALSA channels; default 2 duplicates browser mono to L+R")
+    ap.add_argument("--tx-aplay-verbose", action="store_true", help="enable verbose aplay output in GUI diagnostics")
+    ap.add_argument("--tx-audio-buffer-time", type=int, default=50000, help="ALSA TX buffer-time in microseconds")
+    ap.add_argument("--tx-audio-period-time", type=int, default=10000, help="ALSA TX period-time in microseconds")
+    ap.add_argument("--tx-output-gain", type=float, default=1.0, help="fixed Raspberry-side gain before aplay, 1.0 = unchanged; v45 default is balanced for voice on the DATA port")
+    ap.add_argument("--tx-agc", action="store_true", help="enable Raspberry-side TX AGC/normalization; disabled by default to avoid distortion")
+    ap.add_argument("--tx-agc-target", type=float, default=0.60, help="TX AGC target peak, 0.60 = anti-distortion headroom")
+    ap.add_argument("--tx-agc-max-boost", type=float, default=10.0, help="maximum Raspberry-side TX AGC boost")
+    ap.add_argument("--tx-alsa-card", default="0", help="ALSA card used to configure Speaker, default 0")
+    ap.add_argument("--tx-alsa-speaker-volume", type=int, default=90, help="set the ALSA 'Speaker' mixer to this percentage when TX starts, default 90")
+    ap.add_argument("--tx-ptt-lead-ms", type=int, default=120, help="delay between PTT ON and microphone audio transmission")
+    ap.add_argument("--tx-ptt-tail-ms", type=int, default=80, help="silent tail before releasing PTT")
+    ap.add_argument("--tx-ptt-mode", choices=("cm108", "serial", "none"), default="serial", help="PTT used by TX audio: cm108=DATA-card GPIO, serial=legacy mic PTT, none=audio only")
+    ap.add_argument("--cm108-hidraw", default="auto", help="/dev/hidrawN for the CM108/CM119; default is auto based on --tx-audio-device")
+    ap.add_argument("--cm108-gpio", type=int, default=3, help="CM108/CM119 GPIO used for PTT; typical AllStar/Direwolf = 3")
+    ap.add_argument("--cm108-ptt-invert", action="store_true", help="invert HID GPIO logic if your interface requires 0 to transmit")
+    ap.add_argument("--power-gpio", type=int, default=18, help="BCM GPIO that replays CH2/pin6 to power on the radio; default 18")
+    ap.add_argument("--uart-select-gpio", type=int, default=23, help="BCM GPIO wired to S on the 74LVC157A: LOW=GPIO replay, HIGH=USB TX; default 23")
+    ap.add_argument("--radio-start-on", action="store_true", help="initial hint: start the GUI as if the radio were already on; the RX watchdog will decide afterward")
+    ap.add_argument("--rx-power-timeout", type=float, default=1.2, help="seconds without valid RX frames before considering the radio off; default 1.2")
     args = ap.parse_args()
 
     # Important at process startup: isolate the USB-TTL TX before opening the
@@ -10228,9 +10228,9 @@ def web_main() -> int:
     if not args.radio_start_on and args.uart_select_gpio is not None:
         ok, msg = gpio_write_once(int(args.uart_select_gpio), 0)
         if ok:
-            print(f"[power] pre-init: S GPIO{args.uart_select_gpio}=LOW, TX USB isolato")
+            print(f"[power] pre-init: S GPIO{args.uart_select_gpio}=LOW, TX USB isolated")
         else:
-            print(f"[power] warning pre-init S LOW fallito: {msg}", file=sys.stderr)
+            print(f"[power] warning pre-init S LOW failed: {msg}", file=sys.stderr)
 
     ser = None
     tx = None
@@ -10240,22 +10240,22 @@ def web_main() -> int:
 
     if not args.demo:
         if serial is None:
-            raise SystemExit("pyserial non installato: esegui python3 -m pip install pyserial")
+            raise SystemExit("pyserial not installed: run python3 -m pip install pyserial")
         ser = serial.Serial(args.port, args.baud, bytesize=8, parity="N", stopbits=1, timeout=0.02, write_timeout=1.0, xonxoff=False, rtscts=False, dsrdtr=False)
         print(f"[open] {args.port} @ {args.baud} 8N1")
         if not args.no_tx:
             tx = PanelTx(ser, verbose=args.verbose)
-            tx.set_enabled(bool(args.radio_start_on), "stato iniziale prima del watchdog")
+            tx.set_enabled(bool(args.radio_start_on), "initial state before watchdog")
             tx_th = threading.Thread(target=tx.writer_loop, daemon=True)
             tx_th.start()
-            print("[tx] frame idle pannello→corpo pronto")
+            print("[tx] panel→body idle frame ready")
         if not args.no_rx:
             rx = BodyRx(ser, enabled=True, verbose=args.verbose, ignore_menu=True)
             rx_th = threading.Thread(target=rx.reader_loop, daemon=True)
             rx_th.start()
-            print("[rx] lettura display corpo→pannello attiva")
+            print("[rx] body→panel display reading active")
     else:
-        print("[demo] GUI senza seriale")
+        print("[demo] GUI without serial")
 
     audio = None
     tx_audio = None
@@ -10277,7 +10277,7 @@ def web_main() -> int:
         if args.rx_alsa_agc_off: rxmix.append("AGC off")
         if args.rx_alsa_card: rxmix.append(f"card={args.rx_alsa_card}")
         rxmix_txt=(", " + ", ".join(rxmix)) if rxmix else ""
-        print(f"[audio] RX PCM diretto: {args.audio_device}, S16_LE mono @ {args.audio_rate} Hz, chunk={args.audio_chunk_ms} ms{rxmix_txt}")
+        print(f"[audio] direct RX PCM: {args.audio_device}, S16_LE mono @ {args.audio_rate} Hz, chunk={args.audio_chunk_ms} ms{rxmix_txt}")
 
     if not args.no_tx_audio:
         tx_dev = args.tx_audio_device or args.audio_device
@@ -10315,9 +10315,9 @@ def web_main() -> int:
             print(f"[ptt] warning: {e}", file=sys.stderr)
     elif args.tx_ptt_mode == "serial":
         ptt = SerialMicPttController(tx)
-        print("[ptt] seriale/microfono: usa il vecchio mic_ptt_hold")
+        print("[ptt] serial/microphone: using the legacy mic_ptt_hold")
     else:
-        print("[ptt] disabilitato: il TX audio non keyerà la radio")
+        print("[ptt] disabled: TX audio will not key the radio")
 
     ctx = WebContext(tx=tx, rx=rx, demo=args.demo, audio=audio, tx_audio=tx_audio, ptt=ptt, decode_enabled=args.decode, power_gpio=args.power_gpio, uart_select_gpio=args.uart_select_gpio, radio_start_on=args.radio_start_on, rx_power_timeout_s=args.rx_power_timeout)
     FTM150WebHandler.ctx = ctx
@@ -10328,7 +10328,7 @@ def web_main() -> int:
     scheme = "http"
     if args.ssl_cert or args.ssl_key:
         if not (args.ssl_cert and args.ssl_key):
-            raise SystemExit("usa insieme --ssl-cert e --ssl-key")
+            raise SystemExit("use --ssl-cert and --ssl-key together")
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.ssl_cert, args.ssl_key)
         httpd.socket = tls.wrap_socket(httpd.socket, server_side=True)
@@ -10346,13 +10346,13 @@ def web_main() -> int:
 
     if args.host in ("0.0.0.0", "::"):
         ip = _lan_ip()
-        print(f"[web] in ascolto su tutte le interfacce, porta {args.web_port}")
+        print(f"[web] listening on all interfaces, port {args.web_port}")
         print(f"[web] locale: http://127.0.0.1:{args.web_port}/")
         if ip:
             print(f"[web] LAN:    http://{ip}:{args.web_port}/")
-        print("[web] per accesso da Internet serve VPN/tunnel o port-forwarding sul router")
+        print("[web] Internet access requires a VPN/tunnel or router port-forwarding")
     else:
-        print(f"[web] apri: http://{args.host}:{args.web_port}/")
+        print(f"[web] open: http://{args.host}:{args.web_port}/")
 
     try:
         httpd.serve_forever()
