@@ -577,6 +577,8 @@ Important state fields returned by `/api/state` include:
 | `rx_power_age_s` | Age of the latest valid RX frame. |
 | `rx_power_timeout_s` | Timeout used to decide off state. |
 
+For low-latency remote clients, the same decoded state is also available as a WebSocket text stream on `/api/state.ws`. The server sends an initial `hello` object, then `state` objects whenever the payload changes, plus periodic keepalive refreshes.
+
 Power-related API endpoints:
 
 | Endpoint | Method | Meaning |

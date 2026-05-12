@@ -189,6 +189,7 @@ The web interface is self-contained in `ftm150.py`.
 |---|---|---|
 | `/` | GET | Web front panel. |
 | `/api/state` | GET | Current decoded radio state. |
+| `/api/state.ws` | WebSocket | Push stream of JSON radio state frames for low-latency clients. |
 | `/api/audio` | GET | RX/TX audio status. |
 | `/api/commands` | GET | Command and alias list. |
 | `/audio.pcm` | GET | Streaming raw RX PCM audio. |
@@ -201,7 +202,7 @@ The web interface is self-contained in `ftm150.py`.
 | `/api/power_start` | POST | Run the GPIO CH2 wake replay, switch the mux to USB-TTL TX, then wait for RX frames. |
 | `/api/radio_off` | POST | Refresh/mark radio-off state from the RX watchdog and select the replay GPIO path if RX is absent. |
 
-`/api/state` also includes power-watchdog fields such as `radio_powered`, `powering_on`, `power_message`, `rx_power_alive`, `rx_power_age_s`, and the configured GPIO numbers.
+`/api/state` also includes power-watchdog fields such as `radio_powered`, `powering_on`, `power_message`, `rx_power_alive`, `rx_power_age_s`, and the configured GPIO numbers. `/api/state.ws` sends the same state as WebSocket text frames, with an initial `hello` message followed by `state` messages whenever the payload changes and periodic keepalive refreshes.
 
 Example command POST:
 

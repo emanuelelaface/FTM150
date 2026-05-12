@@ -55,6 +55,12 @@ FTM-150 panel I/O emulator (experimental) - v72
       v104 renders menu 32 DTMF edit as the real 20-key keypad grid: 1-5, 6-0, A-D/*/# plus cursor/space/delete tools.
       v105 preserves DTMF spaces, shows edit position, and equalizes DTMF keypad rows.
       v106 holds the DTMF edit cursor stable during 0x80 phase frames and decodes menu 27 CLOCK TYPE by declared length.
+      v107 classifies PMG F1 25 frames as display2 so they do not corrupt the normal VFO display snapshot.
+      v108 hardens PMG handling: filters PMG companion F1 00 unconditionally, keeps a clean normal display fallback, and stops PMG registered slots from flickering.
+      v109 latches PMG in the web state so normal VFO painting cannot run between alternating PMG frames.
+      v110 adds recorder-level PMG hard guard: F1 25 is forcibly reclassified as display2 even if any caller passes kind=display.
+      v111 keeps a separate latched PMG menu frame so F1 60/menu refreshes cannot kick the web LCD out of PMG.
+      v109 PMG hard guard: latches PMG mode from F1 25/F1 00, keeps those frames out of normal LCD state, and exposes a build id in /api/state.
 
 Wiring for full-duplex tests with ONE USB-TTL adapter:
   USB-TTL TX  -> radio BODY RX line (the line that originally receives panel->body)
@@ -75,8 +81,10 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import audioop
 import base64
 import re
+import select
 import shlex
 import socket
 import struct
@@ -97,6 +105,7 @@ try:
 except ModuleNotFoundError:
     pigpio = None  # required only for GPIO power-on replay
 
+BUILD_ID = "v111-pmg-latched-render-20260512"
 BAUD = 500000
 TX_FRAME_LEN = 210
 RX_FRAME_LEN = 1100
@@ -463,8 +472,24 @@ class BodyRx:
         self.latest_frame_at: Optional[float] = None
         self.latest_data_frame: Optional[bytes] = None
         self.latest_data_at: Optional[float] = None
+        # Last frame that is definitely a normal VFO/MEM display, not PMG/scope/menu.
+        # Used as a final safety net if a PMG family frame ever slips into latest_data_frame.
+        self.latest_normal_data_frame: Optional[bytes] = None
+        self.latest_normal_data_at: Optional[float] = None
         self.latest_menu_frame: Optional[bytes] = None
         self.latest_menu_at: Optional[float] = None
+        # PMG mode sends an F1 25 display2 frame plus an F1 00 companion frame
+        # carrying the selected PMG channel/frequency.  Keep that companion out
+        # of latest_data_frame, otherwise the normal VFO/MEM decoder paints it
+        # as a corrupted normal screen while PMG is active.
+        self.latest_pmg_data_frame: Optional[bytes] = None
+        self.latest_pmg_data_at: Optional[float] = None
+        # Keep the graphical PMG F1 25 frame separate from generic latest_menu_frame.
+        # Some radios emit F1 60 refresh frames around PMG; if those overwrite
+        # latest_menu_frame, the browser briefly falls back to the normal LCD.
+        self.latest_pmg_menu_frame: Optional[bytes] = None
+        self.latest_pmg_menu_at: Optional[float] = None
+        self.pmg_active_until: float = 0.0
         # Short LCD overlays such as LOCK/UNLOCK can disappear between
         # browser polls. Cache the last seen one briefly for the web UI.
         self.latest_overlay_text: Optional[str] = None
@@ -512,15 +537,17 @@ class BodyRx:
         Initially we only split out f1 60, but field captures showed that some
         menu/scope pages arrive as f1 21 and otherwise look like the normal
         display path. Classify by:
-          - known screen-type byte at +1: 0x60, 0x21, 0x23 or 0x29
+          - known screen-type byte at +1: 0x60, 0x21, 0x23, 0x25 or 0x29
           - or menu-like labels in the menu text area +60..+150
 
         This keeps display/decode focused on the dual-frequency screen while
-        display2 gets all alternate/menu-looking pages.
+        display2 gets all alternate/menu-looking pages.  PMG uses F1 25: if it
+        is allowed into latest_data_frame, the normal VFO decoder sees the PMG
+        bar bytes as frequency/status bytes and the web display jumps/glitches.
         """
         if len(frame) < RX_BLOCK_LEN or frame[0] not in (0xF1, 0xF3):
             return False
-        if (frame[0], frame[1]) in ((0xF1, 0x60), (0xF1, 0x21), (0xF1, 0x23), (0xF1, 0x29), (0xF3, 0x20)):
+        if (frame[0], frame[1]) in ((0xF1, 0x60), (0xF1, 0x21), (0xF1, 0x23), (0xF1, 0x25), (0xF1, 0x29), (0xF3, 0x20)):
             return True
 
         # Conservative content fallback: menu pages contain these labels in the
@@ -531,6 +558,39 @@ class BodyRx:
             b"BACKUP", b"AUTO DIALER", b"TX POWER", b"MIC GAIN", b"VOX",
         )
         return any(n in area for n in menu_needles)
+
+    @staticmethod
+    def is_pmg_companion_data_frame(frame: bytes) -> bool:
+        """Return True for the F1 00 frame paired with PMG F1 25.
+
+        PMG is a split screen: F1 25 carries the PMG bar graph, while a
+        neighbouring F1 00 frame carries the selected PMG channel frequency.
+        That F1 00 frame is not a normal dual VFO screen; feeding it to the
+        normal decoder makes the web LCD jump/glitch.  Do not require a recent
+        F1 25 here: some captures show the recorder/status path seeing these
+        F1 00 frames as ordinary display frames, so the signature must be a
+        hard exclusion from the normal snapshot.
+        """
+        if len(frame) < RX_BLOCK_LEN or frame[:2] != b"\xF1\x00":
+            return False
+        # Signature seen in all PMG captures: while the radio is on the PMG
+        # graph, the paired F1 00 frame keeps the normal left header as MEM
+        # at +0006, switches the right/source byte at +0007 to 0x08, uses
+        # +0012 as the selected PMG slot 1..5, and blanks +0021..+0024.
+        # Keep this deliberately structural rather than timing-based.
+        return (
+            int(frame[6]) in (0x40, 0x42, 0x44, 0x46)
+            and int(frame[7]) == 0x08
+            and 1 <= int(frame[12]) <= 5
+            and bytes(frame[21:25]) == b"\x64\x64\x64\x64"
+        )
+
+    @staticmethod
+    def is_pmg_family_frame(frame: Optional[bytes]) -> bool:
+        """True for frames that belong to the PMG screen and must not paint normal VFO."""
+        if frame is None or len(frame) < 2:
+            return False
+        return frame[:2] == b"\xF1\x25" or BodyRx.is_pmg_companion_data_frame(frame)
 
     def reader_loop(self) -> None:
         if not self.enabled:
@@ -575,16 +635,52 @@ class BodyRx:
                 overlay_text = lcd_overlay_text_from_frame(frame)
 
                 is_blank = self.is_blank_or_keepalive(frame)
-                is_menu = self.is_menu_display_frame(frame)
+                is_pmg_graph = bool(len(frame) >= 2 and frame[:2] == b"\xF1\x25")
+                is_menu = bool(is_pmg_graph or self.is_menu_display_frame(frame))
+                # PMG companion F1 00 frames have a stable signature and must
+                # never replace latest_data_frame.  The earlier recent-F1-25
+                # guard was too fragile: if the timing/order changed, the web
+                # display still decoded PMG bytes as a normal VFO screen.
+                is_pmg_companion = (
+                    not is_blank
+                    and not is_menu
+                    and self.is_pmg_companion_data_frame(frame)
+                )
+                is_pmg_family = bool(is_pmg_graph or is_pmg_companion)
+                is_pmg_aux_refresh = bool(
+                    not is_pmg_family
+                    and len(frame) >= 2
+                    and frame[:2] == b"\xF1\x60"
+                    and time.time() <= float(getattr(self, "pmg_active_until", 0.0) or 0.0)
+                )
 
                 with self.lock:
                     self.latest_frame = frame
                     self.latest_frame_at = now
+                    if is_pmg_family:
+                        # Hard latch so PMG cannot flicker back to the normal
+                        # screen between the alternating F1 25 and F1 00 frames.
+                        self.pmg_active_until = max(self.pmg_active_until, now + 1.25)
+                        if is_pmg_graph:
+                            self.latest_pmg_menu_frame = frame
+                            self.latest_pmg_menu_at = now
                     if overlay_text:
                         self.latest_overlay_text = overlay_text
                         self.latest_overlay_at = now
 
                     if is_blank:
+                        self.ignored_frames_seen += 1
+                    elif is_pmg_companion:
+                        # Keep the PMG companion available for the PMG renderer,
+                        # but do not let it replace the normal VFO/MEM snapshot.
+                        self.latest_pmg_data_frame = frame
+                        self.latest_pmg_data_at = now
+                        self.ignored_frames_seen += 1
+                    elif is_pmg_aux_refresh:
+                        # F1 60 refresh/blank-ish frames can arrive around PMG.
+                        # Do not let them overwrite latest_menu_frame while the
+                        # PMG latch is active, otherwise the web LCD exits PMG
+                        # for one poll and appears to scramble/flicker.
                         self.ignored_frames_seen += 1
                     elif is_menu:
                         # Always keep the alternate/menu display stream available
@@ -603,6 +699,8 @@ class BodyRx:
                     else:
                         self.latest_data_frame = frame
                         self.latest_data_at = now
+                        self.latest_normal_data_frame = frame
+                        self.latest_normal_data_at = now
                         self.data_frames_seen += 1
 
                 rec = globals().get("SAVE_RECORDER")
@@ -612,6 +710,8 @@ class BodyRx:
                             kind = "blank"
                         elif is_menu:
                             kind = "display2"
+                        elif is_pmg_companion:
+                            kind = "pmgdata"
                         else:
                             kind = "display"
                         rec.record_frame(kind, frame, rx_time=now, info={
@@ -636,7 +736,12 @@ class BodyRx:
 
     def snapshot(self) -> Tuple[Optional[bytes], Optional[float], int, int, int]:
         with self.lock:
-            return self.latest_data_frame, self.latest_data_at, self.frames_seen, self.data_frames_seen, self.sync_losses
+            frame = self.latest_data_frame
+            ts = self.latest_data_at
+            if self.is_pmg_family_frame(frame):
+                frame = self.latest_normal_data_frame
+                ts = self.latest_normal_data_at
+            return frame, ts, self.frames_seen, self.data_frames_seen, self.sync_losses
 
     def activity_snapshot(self) -> Tuple[Optional[float], int]:
         """Return timestamp/count of the latest valid RX frame of any kind.
@@ -660,7 +765,33 @@ class BodyRx:
 
     def menu_snapshot(self) -> Tuple[Optional[bytes], Optional[float], int]:
         with self.lock:
+            # While PMG is active, always return the last real F1 25 PMG graph
+            # frame even if a generic F1 60/menu refresh arrived afterwards.
+            # This makes the web renderer stay on the PMG screen until the radio
+            # really leaves PMG, instead of alternating PMG/normal LCD.
+            if (
+                self.latest_pmg_menu_frame is not None
+                and time.time() <= float(self.pmg_active_until or 0.0)
+            ):
+                return self.latest_pmg_menu_frame, self.latest_pmg_menu_at, self.menu_frames_seen
             return self.latest_menu_frame, self.latest_menu_at, self.menu_frames_seen
+
+    def pmg_data_snapshot(self) -> Tuple[Optional[bytes], Optional[float]]:
+        with self.lock:
+            frame = self.latest_pmg_data_frame
+            ts = self.latest_pmg_data_at
+            if frame is None and self.is_pmg_companion_data_frame(self.latest_data_frame or b""):
+                frame = self.latest_data_frame
+                ts = self.latest_data_at
+            return frame, ts
+
+    def pmg_menu_snapshot(self) -> Tuple[Optional[bytes], Optional[float]]:
+        with self.lock:
+            return self.latest_pmg_menu_frame, self.latest_pmg_menu_at
+
+    def pmg_active_snapshot(self) -> bool:
+        with self.lock:
+            return bool(time.time() <= float(self.pmg_active_until or 0.0))
 
     def recent_overlay(self, max_age_s: float = 0.9) -> Tuple[Optional[str], Optional[float]]:
         with self.lock:
@@ -1047,12 +1178,19 @@ LOWER_LABEL_BYTE = {
 def decode_lower_label_byte(b: int) -> str:
     # The lower-display label byte carries two things at once:
     #   high bits 0x00/0x20/0x40/0x60 = S / S-DX / ASP / AUTO-A
-    #   low style bits 0x00/0x04/0x08/0x0c = S-meter symbol style
-    # Menu 05 changes those style bits.  They must not turn the lower label
-    # into UNKNOWN when the user selects SCALE/CONTINUE/FULL SIZE.
+    #   low bits  0x01/0x02 can temporarily override that base label with
+    #   SQL / VOL while the user is adjusting squelch or volume.
+    #   style bits 0x00/0x04/0x08/0x0c encode the S-meter symbol style.
+    # Menu 05 changes those style bits. They must not turn the lower label
+    # into UNKNOWN, and mixed values like 0x22 must still decode as SQL/VOL.
     if b in LOWER_LABEL_BYTE:
         return LOWER_LABEL_BYTE[b]
-    if (b & 0x0C) in (0x00, 0x04, 0x08, 0x0C) and (b & 0x03) == 0x00:
+    overlay = b & 0x03
+    if overlay == 0x01:
+        return "SQL"
+    if overlay == 0x02:
+        return "VOL"
+    if (b & 0x0C) in (0x00, 0x04, 0x08, 0x0C):
         base = b & 0x60
         if base in LOWER_LABEL_BYTE:
             return LOWER_LABEL_BYTE[base]
@@ -2176,6 +2314,32 @@ class SaveRecorder:
             if not text.endswith("\n"):
                 f.write("\n")
 
+    def _normalize_frame_kind(self, kind: str, frame: bytes, info: Optional[dict]) -> Tuple[str, dict]:
+        """Hard safety net for PMG frames before they are saved/logged.
+
+        The reader normally classifies F1 25 as display2 and the paired F1 00
+        PMG companion as pmgdata.  The real dumps showed display_f125 files,
+        which means some path can still call record_frame(kind="display") with
+        a PMG frame.  Normalize here too, so the recorder and any later analysis
+        cannot mislabel PMG as the normal display.
+        """
+        out_info = dict(info or {})
+        original = str(kind or "display")
+        new_kind = original
+        try:
+            if frame is not None and len(frame) >= 2:
+                if BodyRx.is_pmg_companion_data_frame(frame):
+                    new_kind = "pmgdata"
+                elif BodyRx.is_menu_display_frame(frame):
+                    new_kind = "display2"
+        except Exception:
+            new_kind = original
+        if new_kind != original:
+            out_info.setdefault("original_kind", original)
+            out_info.setdefault("forced_kind", new_kind)
+            out_info.setdefault("forced_reason", "pmg_hard_guard")
+        return new_kind, out_info
+
     def _frame_text(self, kind: str, frame: bytes, previous: Optional[bytes]) -> str:
         parts: List[str] = []
         parts.append(f"kind={kind} len={len(frame)} header={frame[:16].hex(' ')}")
@@ -2188,7 +2352,7 @@ class SaveRecorder:
                 parts.append(f"diff error: {type(e).__name__}: {e}")
             parts.append("")
         try:
-            if kind == "display2" or (len(frame) >= 2 and frame[0] in (0xF1, 0xF3) and frame[1] in (0x60, 0x21, 0x20)):
+            if kind == "display2" or (len(frame) >= 2 and frame[0] in (0xF1, 0xF3) and frame[1] in (0x60, 0x21, 0x25, 0x20)):
                 parts.append(decode_menu_layout(frame, raw=True))
             else:
                 parts.append(decode_display_snapshot(frame, raw=True))
@@ -2229,6 +2393,8 @@ class SaveRecorder:
                 "rx_block_len": RX_BLOCK_LEN,
                 "tx_frame_len": TX_FRAME_LEN,
                 "baud": BAUD,
+                "build_id": BUILD_ID,
+                "pmg_guard": "F1 25 is forced to display2; PMG companion F1 00 is forced to pmgdata; PMG F1 25 is latched for web render",
             }
             self._write_jsonl_unlocked(meta)
             self._write_text(os.path.join(root, "README.txt"), "\n".join([
@@ -2290,6 +2456,7 @@ class SaveRecorder:
     def record_frame(self, kind: str, frame: Optional[bytes], rx_time: Optional[float] = None, info: Optional[dict] = None) -> None:
         if frame is None:
             return
+        kind, info = self._normalize_frame_kind(kind, frame, info)
         with self.lock:
             if not self.active:
                 return
@@ -3088,26 +3255,47 @@ async function startTxAudio(){
     await ctx.resume();
     const source=ctx.createMediaStreamSource(stream);
     const procSize=tx.processor_size||1024;
+    const packetBytes=procSize*2;
+    const maxBufferedBytes=Math.max(packetBytes, Math.min(tx.max_ws_buffer_bytes||65536, packetBytes*2));
     const proc=ctx.createScriptProcessor(procSize,1,1);
     ws=new WebSocket(wsUrl('/audio-tx.ws'));
     ws.binaryType='arraybuffer';
-    txCtl={stream,ctx,source,proc,ws,sendEnabled:false,bytes:0,dropped:0,lastPeak:0};
+    txCtl={stream,ctx,source,proc,ws,sendEnabled:false,bytes:0,dropped:0,lastPeak:0,pendingBuf:null,maxBufferedBytes,packetBytes};
     setTxButton(true);
     setTxStatus('opening TX link...');
+
+    function sendLatest(payload){
+      if(!txCtl || !txCtl.sendEnabled) return false;
+      if(ws.readyState!==1) return false;
+      if(ws.bufferedAmount > maxBufferedBytes) return false;
+      try{
+        ws.send(payload);
+        txCtl.bytes+=payload.byteLength||0;
+        return true;
+      }catch(_e){
+        return false;
+      }
+    }
+
+    function flushPending(){
+      if(!txCtl || !txCtl.pendingBuf) return;
+      if(sendLatest(txCtl.pendingBuf)) txCtl.pendingBuf=null;
+    }
 
     proc.onaudioprocess=(ev)=>{
       const out=ev.outputBuffer.getChannelData(0);
       for(let i=0;i<out.length;i++) out[i]=0;
       if(!txCtl || !txCtl.sendEnabled) return;
       if(ws.readyState!==1) return;
-      // Keep latency bounded: if the network/server pipe backs up, drop this
-      // microphone block instead of transmitting delayed speech.
-      if(ws.bufferedAmount > (tx.max_ws_buffer_bytes||65536)){txCtl.dropped++; return;}
       const gain=Number(document.getElementById('txGain')?.value||1);
       const pcm=floatToPcm16(ev.inputBuffer.getChannelData(0),gain);
       txCtl.lastPeak=pcm.peak;
-      txCtl.bytes+=pcm.buf.byteLength;
-      ws.send(pcm.buf);
+      if(sendLatest(pcm.buf)) return;
+      // Keep only the newest microphone block. If the network/server path
+      // falls behind, replace any stale pending PCM instead of transmitting it
+      // later with audible jitter/lag.
+      txCtl.pendingBuf=pcm.buf;
+      txCtl.dropped++;
     };
 
     source.connect(proc);
@@ -3119,6 +3307,7 @@ async function startTxAudio(){
       await sleep(tx.ptt_lead_ms||120);
       if(!txCtl || ws.readyState!==1) return;
       txCtl.sendEnabled=true;
+      txCtl.flushTimer=setInterval(flushPending,12);
       setTxStatus('TX live · '+rate+' Hz PCM');
     };
     ws.onerror=()=>{setTxStatus('TX websocket error');};
@@ -3137,6 +3326,8 @@ function stopTxAudio(updateText=true){
   if(!t) return;
   t.sendEnabled=false;
   if(t.levelTimer) clearInterval(t.levelTimer);
+  if(t.flushTimer) clearInterval(t.flushTimer);
+  try{if(t.ws.readyState===1) t.ws.send('stop');}catch(e){}
   try{t.ws.close(1000,'stop');}catch(e){}
   try{t.proc.disconnect();}catch(e){}
   try{t.source.disconnect();}catch(e){}
@@ -3497,10 +3688,14 @@ async function poll(){try{
   const j=await r.json();
   applyPowerState(j);
   applyDisplaySettings(j.display_settings||{});
-  updateSide('l',j.left);
-  updateSide('r',j.right);
-  document.getElementById('leftVfo').classList.toggle('active',j.main==='LEFT');
-  document.getElementById('rightVfo').classList.toggle('active',j.main==='RIGHT');
+  const menuForRender=activeMenuForRender(j.menu||{});
+  const showingPmg=!!(menuForRender && menuForRender.visible && menuForRender.type==='pmg');
+  if(!showingPmg){
+    updateSide('l',j.left);
+    updateSide('r',j.right);
+    document.getElementById('leftVfo').classList.toggle('active',j.main==='LEFT');
+    document.getElementById('rightVfo').classList.toggle('active',j.main==='RIGHT');
+  }
 
   let ll='off', rl='off';
   const a=j.activity||{};
@@ -3516,10 +3711,11 @@ async function poll(){try{
   renderDialogOverlay(ov);
   const ovText=(ov.kind==='confirm') ? '' : (ov.text || (j.mute?'MUTE':''));
   if(mo){ mo.textContent=ovText || 'MUTE'; mo.classList.toggle('show',!!ovText); }
-  renderMenu(activeMenuForRender(j.menu||{}));
+  renderMenu(menuForRender);
   let st=[];
   if(!j.radio_powered){ st.push(j.powering_on?'POWERING ON':'POWER OFF'); }
   st.push(j.demo?'DEMO':'RX age '+(j.age_s??0).toFixed(2)+'s');
+  if(j.build_id) st.push(j.build_id);
   if(j.activity){
     let sides=[];
     if(a.rx_left) sides.push('RX-L');
@@ -3595,7 +3791,7 @@ function renderMenu(menu){
     const shift=menu.shift?`<span class="pmg-badge">${esc(menu.shift)}</span>`:'';
     const tone=menu.tone?`<span class="pmg-badge">${esc(menu.tone)}</span>`:'';
     const pmg=`<span class="pmg-badge">PMG</span>`;
-    const freq=freqHtml(menu.freq||'---.---');
+    const freq=freqHtml((menu.freq && menu.freq !== '---.---') ? menu.freq : (prevPmg && prevPmg.freq ? prevPmg.freq : '---.---'));
     screen.innerHTML=`<div class="pmg-screen">
       <div class="pmg-top"><div class="pmg-badges">${pmg}${source}${mode}${shift}${tone}</div><div class="pmg-freq">${freq}</div></div>
       <div class="pmg-body"><div class="pmg-bars">${bars}</div><div class="pmg-labels">${labels}</div></div>
@@ -4422,6 +4618,11 @@ class TxAudioSink:
         self.total_clipped_samples = 0
         self.last_chunk_samples = 0
         self.last_meter_at = 0.0
+        self.pending_chunk: Optional[Tuple[bytes, str]] = None
+        self.pending_event = threading.Event()
+        self.writer_stop = False
+        self.writer_thread: Optional[threading.Thread] = None
+        self.dropped_chunks = 0
 
     @staticmethod
     def _card_from_device(device: str) -> Optional[str]:
@@ -4453,6 +4654,7 @@ class TxAudioSink:
             last_aplay_command = self.last_aplay_command
             agc_current_boost = self.agc_current_boost
             last_meter_at = self.last_meter_at
+            dropped_chunks = self.dropped_chunks
         return {
             "enabled": self.enabled,
             "device": self.device,
@@ -4481,6 +4683,7 @@ class TxAudioSink:
             "last_error": last_error,
             "bytes_received": bytes_received,
             "chunks_received": chunks_received,
+            "dropped_chunks": dropped_chunks,
             "input_peak": last_input_peak,
             "output_peak": last_output_peak,
             "output_rms": last_output_rms,
@@ -4583,26 +4786,27 @@ class TxAudioSink:
             self.total_clipped_samples = 0
             self.last_chunk_samples = 0
             self.agc_current_boost = 1.0
+            self.pending_chunk = None
+            self.dropped_chunks = 0
+            self.writer_stop = False
+            self.pending_event.clear()
+            self.writer_thread = threading.Thread(target=self._writer_loop, args=(proc,), daemon=True)
+            self.writer_thread.start()
 
     def _apply_output_processing(self, data: bytes, channel: str = "both") -> bytes:
-        samples = array.array("h")
-        samples.frombytes(data)
-        if sys.byteorder != "little":
-            samples.byteswap()
-
-        n = len(samples)
-        if n <= 0:
+        if not data:
+            return data
+        if len(data) & 1:
+            data = data[:-1]
+        if not data:
             return data
 
-        # First pass: measure browser PCM before Raspberry gain/AGC.
-        peak_i = 0
-        sumsq_in = 0.0
-        for sample in samples:
-            a = abs(int(sample))
-            if a > peak_i:
-                peak_i = a
-            sumsq_in += float(sample) * float(sample)
-        input_peak = min(1.0, peak_i / 32768.0)
+        n = len(data) // 2
+
+        # This path runs for every TX chunk. Keep it in C-level stdlib audioop
+        # operations so Raspberry CPU does not become the bottleneck and create
+        # multi-second backlog / late PTT release.
+        input_peak = min(1.0, audioop.max(data, 2) / 32768.0)
 
         # AGC: if the browser mic is very low, boost it up to target peak.
         # Keep the boost bounded and smoothed to avoid pumping too violently.
@@ -4619,7 +4823,7 @@ class TxAudioSink:
 
         total_gain = self.output_gain * agc_boost
         if total_gain <= 0.0:
-            out = b"\x00" * len(data) * self.playback_channels
+            mono_out = b"\x00" * len(data)
             with self.lock:
                 self.agc_current_boost = agc_boost
                 self.last_input_peak = input_peak
@@ -4629,29 +4833,14 @@ class TxAudioSink:
                 self.last_clipped_samples = 0
                 self.last_chunk_samples = n
                 self.last_meter_at = time.time()
-            return out
+        elif abs(total_gain - 1.0) < 1e-6:
+            mono_out = data
+        else:
+            mono_out = audioop.mul(data, 2, total_gain)
 
+        output_peak = min(1.0, audioop.max(mono_out, 2) / 32768.0) if mono_out else 0.0
+        output_rms = min(1.0, audioop.rms(mono_out, 2) / 32768.0) if mono_out else 0.0
         clipped = 0
-        out_peak_i = 0
-        sumsq_out = 0.0
-        for i, sample in enumerate(samples):
-            v = int(round(int(sample) * total_gain))
-            if v > 32767:
-                v = 32767
-                clipped += 1
-            elif v < -32768:
-                v = -32768
-                clipped += 1
-            av = abs(v)
-            if av > out_peak_i:
-                out_peak_i = av
-            sumsq_out += float(v) * float(v)
-            samples[i] = v
-
-        if sys.byteorder != "little":
-            samples.byteswap()
-        output_peak = min(1.0, out_peak_i / 32768.0)
-        output_rms = min(1.0, math.sqrt(sumsq_out / max(1, n)) / 32768.0)
         with self.lock:
             self.agc_current_boost = agc_boost
             self.last_input_peak = input_peak
@@ -4668,18 +4857,47 @@ class TxAudioSink:
         # channel that a mono stream was not feeding.
         channel = (channel or "both").lower()
         if self.playback_channels == 1:
-            return samples.tobytes()
-        stereo = array.array("h")
+            return mono_out
         if channel == "left":
-            for sample in samples:
-                stereo.append(sample); stereo.append(0)
-        elif channel == "right":
-            for sample in samples:
-                stereo.append(0); stereo.append(sample)
-        else:
-            for sample in samples:
-                stereo.append(sample); stereo.append(sample)
-        return stereo.tobytes()
+            return audioop.tostereo(mono_out, 2, 1.0, 0.0)
+        if channel == "right":
+            return audioop.tostereo(mono_out, 2, 0.0, 1.0)
+        return audioop.tostereo(mono_out, 2, 1.0, 1.0)
+
+    def _writer_loop(self, proc: subprocess.Popen) -> None:
+        while True:
+            self.pending_event.wait(0.25)
+            self.pending_event.clear()
+            while True:
+                with self.lock:
+                    if self.writer_stop:
+                        return
+                    item = self.pending_chunk
+                    self.pending_chunk = None
+                if item is None:
+                    break
+                data, channel = item
+                try:
+                    self._write_processed(proc, data, channel=channel)
+                except Exception as e:
+                    with self.lock:
+                        extra = f": {self.last_alsa_message}" if self.last_alsa_message else ""
+                        self.last_error = f"aplay write failed: {e}{extra}"
+                    return
+
+    def _write_processed(self, proc: subprocess.Popen, data: bytes, channel: str = "both") -> None:
+        out = self._apply_output_processing(data, channel=channel)
+        if not out:
+            return
+        with self.lock:
+            if not self.active or self.proc is not proc or proc.stdin is None:
+                raise RuntimeError("TX audio non attivo")
+            if proc.poll() is not None:
+                extra = f": {self.last_alsa_message}" if self.last_alsa_message else ""
+                self.last_error = f"aplay exited with code {proc.returncode}{extra}"
+                raise RuntimeError(self.last_error)
+            stdin = proc.stdin
+        stdin.write(out)
 
     def write(self, data: bytes, channel: str = "both") -> None:
         if not data:
@@ -4689,30 +4907,20 @@ class TxAudioSink:
             data = data[:-1]
         if not data:
             return
-        data = self._apply_output_processing(data, channel=channel)
         with self.lock:
             proc = self.proc
-            if not self.active or proc is None or proc.stdin is None:
+            if not self.active or proc is None:
                 raise RuntimeError("TX audio non attivo")
-            if proc.poll() is not None:
+            if proc.poll() is not None or proc.stdin is None:
                 extra = f": {self.last_alsa_message}" if self.last_alsa_message else ""
                 self.last_error = f"aplay exited with code {proc.returncode}{extra}"
                 raise RuntimeError(self.last_error)
-            stdin = proc.stdin
-        try:
-            stdin.write(data)
-            try:
-                stdin.flush()
-            except Exception:
-                pass
-        except Exception as e:
-            with self.lock:
-                extra = f": {self.last_alsa_message}" if self.last_alsa_message else ""
-                self.last_error = f"aplay write failed: {e}{extra}"
-            raise
-        with self.lock:
+            if self.pending_chunk is not None:
+                self.dropped_chunks += 1
+            self.pending_chunk = (data, channel)
             self.bytes_received += len(data)
             self.chunks_received += 1
+        self.pending_event.set()
 
     def write_tone(self, duration_ms: int = 1000, freq_hz: float = 1000.0, level: float = 0.85, channel: str = "both") -> None:
         """Write a local test tone through the same ALSA path, without browser mic."""
@@ -4755,6 +4963,16 @@ class TxAudioSink:
             self.proc = None
             self.active = False
             self.started_at = None
+            self.writer_stop = True
+            self.pending_chunk = None
+            writer = self.writer_thread
+            self.writer_thread = None
+        self.pending_event.set()
+        if writer is not None and writer is not threading.current_thread():
+            try:
+                writer.join(timeout=0.05)
+            except Exception:
+                pass
         if proc is None:
             return
         try:
@@ -4887,6 +5105,74 @@ def _audio_tx_ws_response(handler: BaseHTTPRequestHandler) -> None:
     finally:
         if started:
             handler.ctx.stop_tx_audio_session()
+        try:
+            _ws_send_frame(handler, 0x8, b"")
+        except Exception:
+            pass
+
+
+def _state_ws_response(handler: BaseHTTPRequestHandler) -> None:
+    key = handler.headers.get("Sec-WebSocket-Key", "")
+    if handler.headers.get("Upgrade", "").lower() != "websocket" or not key:
+        handler.send_error(400, "websocket upgrade required")
+        return
+
+    accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+    handler.send_response(101, "Switching Protocols")
+    handler.send_header("Upgrade", "websocket")
+    handler.send_header("Connection", "Upgrade")
+    handler.send_header("Sec-WebSocket-Accept", accept)
+    handler.end_headers()
+
+    interval_s = 0.12
+    heartbeat_s = 15.0
+    last_state_payload = b""
+    last_sent_at = 0.0
+
+    hello = {
+        "type": "hello",
+        "version": 1,
+        "transport": "state.ws",
+        "interval_ms": int(interval_s * 1000),
+        "heartbeat_s": heartbeat_s,
+    }
+
+    try:
+        handler.connection.settimeout(None)
+        _ws_send_frame(handler, 0x1, json.dumps(hello, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+        while True:
+            now = time.time()
+            readable, _, _ = select.select([handler.connection], [], [], interval_s)
+            if readable:
+                frame = _ws_read_frame(handler)
+            else:
+                frame = None
+
+            if frame is not None:
+                opcode, payload = frame
+                if opcode == 0x8:  # close
+                    break
+                if opcode == 0x9:  # ping
+                    _ws_send_frame(handler, 0xA, payload[:125])
+                    continue
+                if opcode == 0x1 and payload.strip().lower() in (b"stop", b"close", b"quit"):
+                    break
+
+            state_obj = handler.ctx.state()
+            payload = json.dumps(
+                {"type": "state", "state": state_obj},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+
+            if payload != last_state_payload or (now - last_sent_at) >= heartbeat_s:
+                _ws_send_frame(handler, 0x1, payload)
+                last_state_payload = payload
+                last_sent_at = now
+    except Exception:
+        pass
+    finally:
         try:
             _ws_send_frame(handler, 0x8, b"")
         except Exception:
@@ -7875,8 +8161,12 @@ def _pmg_state_from_frame(menu_frame: Optional[bytes], age: float, data_frame: O
     while len(flags) < 5:
         flags.append(0)
 
-    sparse_flags = any(int(x) == 0 for x in flags)
-    present = set(i + 1 for i, flag in enumerate(flags) if int(flag) != 0) if sparse_flags else set(range(1, 6))
+    # In the PMG dumps these bytes toggle between 01 01 01 01 01 and sparse
+    # states such as 00 01 00 00 00 while the radio remains on the same PMG
+    # page.  Treating them as registration flags makes the web PMG graph flicker
+    # between five slots and one slot.  They are activity/phase flags, not a
+    # reliable registration mask, so keep all five PMG slots stable.
+    present = set(range(1, 6))
 
     channels: List[dict] = []
     strongest_idx = 0
@@ -8870,6 +9160,17 @@ class WebContext:
     def state(self) -> dict:
         self._refresh_radio_power_from_rx()
         frame, ts, counters = self.current_frame()
+        # Absolute guard for the web path too: if any PMG-family frame ever
+        # reaches current_frame(), never decode it as a normal VFO/MEM LCD.
+        try:
+            if self.rx is not None and BodyRx.is_pmg_family_frame(frame):
+                clean_frame, clean_ts, _seen, _data_seen, _sync = self.rx.snapshot()
+                if clean_frame is not None and not BodyRx.is_pmg_family_frame(clean_frame):
+                    frame, ts = clean_frame, clean_ts
+                else:
+                    frame, ts = _demo_frame(), None
+        except Exception:
+            pass
         sm_style = _smeter_symbol_from_display_frame(frame)
         if sm_style in ("BARS", "SCALE", "CONTINUE", "FULL SIZE"):
             self.session_display_settings["s_meter_symbol"] = sm_style
@@ -8902,7 +9203,7 @@ class WebContext:
         overlay = confirm_overlay or {"active": bool(overlay_text), "kind": "text" if overlay_text else "none", "text": overlay_text, "latched": overlay_latched}
         save_st = SAVE_RECORDER.status() if globals().get("SAVE_RECORDER") is not None else {"active": False}
         power_st = self.power_status()
-        out = {"demo": self.demo, "age_s": age if age is not None else 9999.0, "counters": counters, "main": main, "left": _side_for_web(frame, SIDE_LEFT), "right": _side_for_web(frame, SIDE_RIGHT), "activity": activity, "mute": overlay_text == "MUTE", "overlay": overlay, "menu": menu, "display_settings": self.display_settings(), "ptt_latched": self.ptt_latched, "tx_audio_active": self.tx_audio_active, "save": save_st, "human": human}
+        out = {"build_id": BUILD_ID, "demo": self.demo, "age_s": age if age is not None else 9999.0, "counters": counters, "main": main, "left": _side_for_web(frame, SIDE_LEFT), "right": _side_for_web(frame, SIDE_RIGHT), "activity": activity, "mute": overlay_text == "MUTE", "overlay": overlay, "menu": menu, "display_settings": self.display_settings(), "ptt_latched": self.ptt_latched, "tx_audio_active": self.tx_audio_active, "save": save_st, "human": human}
         out.update(power_st)
         return out
 
@@ -9180,6 +9481,14 @@ class WebContext:
             data_frame, _ts, _c = self.current_frame()
 
         menu_frame, menu_ts, _menu_seen = self.rx.menu_snapshot()
+        menu_data_frame = data_frame
+        if menu_frame is not None and len(menu_frame) >= 2 and menu_frame[:2] == b"\xF1\x25":
+            try:
+                pmg_frame, pmg_ts = self.rx.pmg_data_snapshot()
+                if pmg_frame is not None and (pmg_ts is None or time.time() - pmg_ts <= 1.25):
+                    menu_data_frame = pmg_frame
+            except Exception:
+                pass
 
         # Menu 16 is special: its actual screens are carried by the primary
         # display/menu stream (F1 23 list/action overlay / F1 29 edit).  Do not
@@ -9209,7 +9518,7 @@ class WebContext:
         if menu_frame16 is not None and self._menu16_context_active(menu_frame, menu_ts):
             return self._decorate_setup_menu(menu_frame16, data_frame)
 
-        menu = _menu_state_for_web(menu_frame, menu_ts, data_frame)
+        menu = _menu_state_for_web(menu_frame, menu_ts, menu_data_frame)
         if menu.get("visible"):
             if menu.get("type") == "memory_edit":
                 self._clear_memory_action_menu()
@@ -9771,6 +10080,9 @@ class FTM150WebHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             _json_response(self, self.ctx.state())
             return
+        if path == "/api/state.ws":
+            _state_ws_response(self)
+            return
         if path == "/api/audio":
             _json_response(self, self.ctx.audio_state())
             return
@@ -9834,6 +10146,7 @@ def _web_console_loop(rx: Optional[BodyRx], httpd: ThreadingHTTPServer) -> None:
     This is intentionally small: the web buttons still send all radio commands,
     while the terminal can be used for save start/save end during mapping.
     """
+    print(f"[build] {BUILD_ID}")
     print("[console] comandi disponibili: save start [label] [outdir], save stop/end, save status, quit")
     while True:
         try:
