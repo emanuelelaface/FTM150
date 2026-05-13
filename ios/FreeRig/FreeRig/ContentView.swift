@@ -453,6 +453,10 @@ private struct RadioSideDisplayCard: View {
         normalizedMode(side?.mode) ?? normalizedMode(side?.modeRaw) ?? "FM"
     }
 
+    private var displayFrequency: String {
+        normalizedDisplayFrequency(side?.freq)
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
@@ -474,13 +478,17 @@ private struct RadioSideDisplayCard: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(side?.freq ?? "---.---")
-                    .font(.system(size: 40, weight: .black, design: .rounded))
-                    .monospacedDigit()
-                    .tracking(-1.1)
-                    .foregroundStyle(AppTheme.lcdText)
-                    .minimumScaleFactor(0.5)
-                    .lineLimit(1)
+                ZStack(alignment: .leading) {
+                    Text("---.---")
+                        .opacity(0)
+                    Text(displayFrequency)
+                }
+                .font(.system(size: 40, weight: .black, design: .rounded))
+                .monospacedDigit()
+                .tracking(-1.1)
+                .foregroundStyle(AppTheme.lcdText)
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -521,6 +529,16 @@ private struct RadioSideDisplayCard: View {
         if text.contains("AM") { return "AM" }
         if text.contains("FM") { return "FM" }
         return nil
+    }
+
+    private func normalizedDisplayFrequency(_ raw: String?) -> String {
+        let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return "---.---" }
+        if text.contains(where: \.isNumber) {
+            return text
+        }
+        let placeholderLike = text.allSatisfy { $0 == "-" || $0 == "." }
+        return placeholderLike ? "---.---" : text
     }
 
     private func inferredShift(from raw: String?) -> String? {
