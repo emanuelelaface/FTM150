@@ -318,8 +318,25 @@ private struct MenuFocusedRadioDisplay: View {
     let rightKnob: KnobSpec
     @ObservedObject var viewModel: RadioViewModel
 
+    private var activeMenu: RadioMenuState? {
+        guard let menu = state?.menu, menu.visible else { return nil }
+        return menu
+    }
+
     private var displayContentVisible: Bool {
         state?.radioPowered == true && state?.poweringOn != true
+    }
+
+    private var displayHeight: CGFloat {
+        activeMenu?.isMemoryMenu == true ? 312 : 236
+    }
+
+    private var memoryMenuExpanded: Bool {
+        activeMenu?.isMemoryMenu == true
+    }
+
+    private var stackSpacing: CGFloat {
+        activeMenu?.isMemoryMenu == true ? 8 : 14
     }
 
     private var powerOverlayText: String? {
@@ -333,43 +350,63 @@ private struct MenuFocusedRadioDisplay: View {
     }
 
     var body: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(displayContentVisible ? AnyShapeStyle(AppTheme.lcdFill) : AnyShapeStyle(AppTheme.lcdOffFill))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(displayContentVisible ? AppTheme.lcdFrameStroke : AppTheme.lcdOffFrameStroke, lineWidth: 2)
-                    )
+        GeometryReader { geometry in
+            VStack(spacing: memoryMenuExpanded ? 0 : stackSpacing) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(displayContentVisible ? AnyShapeStyle(AppTheme.lcdFill) : AnyShapeStyle(AppTheme.lcdOffFill))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(displayContentVisible ? AppTheme.lcdFrameStroke : AppTheme.lcdOffFrameStroke, lineWidth: 2)
+                        )
 
-                Group {
-                    if let overlay = state?.overlay, overlay.active {
-                        DisplayOverlayScreenView(overlay: overlay)
-                            .padding(12)
-                    } else if let menu = state?.menu, menu.visible {
-                        DisplayMenuScreenView(menu: menu)
-                            .padding(12)
-                    } else {
-                        Text("Menu")
-                            .font(.system(size: 28, weight: .black, design: .rounded))
-                            .foregroundStyle(AppTheme.lcdText.opacity(0.8))
+                    Group {
+                        if let overlay = state?.overlay, overlay.active {
+                            DisplayOverlayScreenView(overlay: overlay)
+                                .padding(.top, 12)
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, memoryMenuExpanded ? 54 : 12)
+                        } else if let menu = state?.menu, menu.visible {
+                            DisplayMenuScreenView(menu: menu)
+                                .padding(.top, 12)
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, memoryMenuExpanded ? 54 : 12)
+                        } else {
+                            Text("Menu")
+                                .font(.system(size: 28, weight: .black, design: .rounded))
+                                .foregroundStyle(AppTheme.lcdText.opacity(0.8))
+                        }
+                    }
+                    .opacity(displayContentVisible ? 1 : 0)
+
+                    if memoryMenuExpanded {
+                        knobControls
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 10)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    }
+
+                    if let powerOverlayText {
+                        PowerStateOverlayLabel(text: powerOverlayText)
                     }
                 }
-                .opacity(displayContentVisible ? 1 : 0)
+                .frame(height: memoryMenuExpanded ? geometry.size.height : displayHeight)
+                .clipped()
 
-                if let powerOverlayText {
-                    PowerStateOverlayLabel(text: powerOverlayText)
+                if !memoryMenuExpanded {
+                    knobControls
+                        .padding(.horizontal, 10)
                 }
             }
-            .frame(height: 236)
-            .clipped()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
 
-            HStack(spacing: 0) {
-                InlineKnobControl(spec: leftKnob, enabled: enabled, viewModel: viewModel)
-                Spacer(minLength: 0)
-                InlineKnobControl(spec: rightKnob, enabled: enabled, viewModel: viewModel)
-            }
-            .padding(.horizontal, 10)
+    private var knobControls: some View {
+        HStack(spacing: 0) {
+            InlineKnobControl(spec: leftKnob, enabled: enabled, viewModel: viewModel)
+            Spacer(minLength: 0)
+            InlineKnobControl(spec: rightKnob, enabled: enabled, viewModel: viewModel)
         }
     }
 }
@@ -390,7 +427,7 @@ private struct RadioSideDisplayCard: View {
     }
 
     private var shift: String? {
-        normalizedTag(side?.shift)
+        normalizedTag(side?.shift) ?? inferredShift(from: side?.modeRaw)
     }
 
     private var tone: String? {
@@ -400,13 +437,20 @@ private struct RadioSideDisplayCard: View {
     private var memoryLine: String {
         let memNo = side?.memNo.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let name = side?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let group = side?.memGroup.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let parts = [group, memNo, name].filter { !$0.isEmpty }
+        let parts = [memNo, name].filter { !$0.isEmpty }
         return parts.isEmpty ? " " : parts.joined(separator: " · ")
     }
 
     private var lowerState: RadioLowerState? {
         side?.lower
+    }
+
+    private var meterLabel: String {
+        compact(lowerState?.label) ?? "S"
+    }
+
+    private var displayMode: String {
+        normalizedMode(side?.mode) ?? normalizedMode(side?.modeRaw) ?? "FM"
     }
 
     var body: some View {
@@ -431,19 +475,14 @@ private struct RadioSideDisplayCard: View {
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(side?.freq ?? "---.---")
-                    .font(.system(size: 40, weight: .black, design: .monospaced))
-                    .fontWidth(.condensed)
+                    .font(.system(size: 40, weight: .black, design: .rounded))
                     .monospacedDigit()
+                    .tracking(-1.1)
                     .foregroundStyle(AppTheme.lcdText)
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                Text(side?.mode.isEmpty == false ? side?.mode ?? "" : "--")
-                    .font(.system(size: 17, weight: .black, design: .rounded))
-                    .foregroundStyle(AppTheme.lcdText.opacity(0.88))
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(memoryLine)
                 .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -452,19 +491,11 @@ private struct RadioSideDisplayCard: View {
                 .lineLimit(1)
 
             HStack(spacing: 10) {
-                Text(lowerState?.label.isEmpty == false ? lowerState?.label ?? "" : "S")
-                    .font(.system(size: 14, weight: .black, design: .rounded))
-                    .foregroundStyle(AppTheme.lcdText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .frame(width: 58, alignment: .leading)
+                LCDStatusBadge(text: meterLabel, minWidth: 58)
 
                 MeterBar(activeSegments: meterSegments(lowerState), accent: AppTheme.lcdText)
 
-                Text(side?.modeRaw.isEmpty == false ? side?.modeRaw ?? "" : "FM")
-                    .font(.system(size: 13, weight: .black, design: .rounded))
-                    .foregroundStyle(AppTheme.lcdText.opacity(0.85))
-                    .frame(minWidth: 44, alignment: .trailing)
+                LCDStatusBadge(text: displayMode, minWidth: 50)
             }
         }
         .padding(.horizontal, 12)
@@ -482,6 +513,24 @@ private struct RadioSideDisplayCard: View {
         let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty, text != "-", text != "OFF" else { return nil }
         return text
+    }
+
+    private func normalizedMode(_ raw: String?) -> String? {
+        let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
+        guard !text.isEmpty else { return nil }
+        if text.contains("AM") { return "AM" }
+        if text.contains("FM") { return "FM" }
+        return nil
+    }
+
+    private func inferredShift(from raw: String?) -> String? {
+        let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
+        guard !text.isEmpty else { return nil }
+        if text.contains("+/-") { return "+/-" }
+        if text.contains("+-") { return "+/-" }
+        if text == "+" || text.hasSuffix("+") || text.contains(" +") { return "+" }
+        if text == "-" || text.hasSuffix("-") || text.contains(" -") { return "-" }
+        return nil
     }
 
     private func meterSegments(_ lower: RadioLowerState?) -> Int {
@@ -729,25 +778,53 @@ private struct DisplayMenuView: View {
 private struct DisplayMenuScreenView: View {
     let menu: RadioMenuState
 
+    private var hasActiveKeypad: Bool {
+        if let type = compact(menu.type), type != "quick" {
+            return false
+        }
+        let hasCells = (menu.cells ?? []).contains { compact($0.text) != nil }
+        return hasCells && (
+            menu.type == "quick" ||
+                menu.valueSelected == true ||
+                menu.editing == true ||
+                menu.selectedIndex != nil ||
+                menu.footerSelected == true
+        )
+    }
+
     var body: some View {
         Group {
-            switch menu.type {
-            case "pmg":
-                PMGMenuScreenView(menu: menu)
-            case "scope":
-                ScopeMenuScreenView(menu: menu)
-            case "memory_list":
-                MemoryListMenuScreenView(menu: menu)
-            case "memory_select":
-                MemorySelectMenuScreenView(menu: menu)
-            case "memory_edit":
-                MemoryEditMenuScreenView(menu: menu)
-            case "quick":
+            if hasActiveKeypad {
                 QuickMenuScreenView(menu: menu)
-            case "full":
-                FullMenuScreenView(menu: menu)
-            default:
-                GenericMenuScreenView(menu: menu)
+            } else {
+                switch menu.type {
+                case "pmg":
+                    PMGMenuScreenView(menu: menu)
+                case "scope":
+                    ScopeMenuScreenView(menu: menu)
+                case "memory_list":
+                    MemoryListMenuScreenView(menu: menu)
+                case "memory_select":
+                    MemorySelectMenuScreenView(menu: menu)
+                case "memory_edit":
+                    MemoryEditMenuScreenView(menu: menu)
+                case "memory_freq_keypad":
+                    MemoryFreqKeypadScreenView(menu: menu)
+                case "memory_tag_keypad":
+                    MemoryTagKeypadScreenView(menu: menu)
+                case "menu1_keypad":
+                    Menu1KeypadScreenView(menu: menu)
+                case "dtmf_edit":
+                    DTMFEditMenuScreenView(menu: menu)
+                case "quick":
+                    QuickMenuScreenView(menu: menu)
+                case "full":
+                    FullMenuScreenView(menu: menu)
+                case "submenu":
+                    SubmenuMenuScreenView(menu: menu)
+                default:
+                    GenericMenuScreenView(menu: menu)
+                }
             }
         }
     }
@@ -756,19 +833,19 @@ private struct DisplayMenuScreenView: View {
 private struct MemoryListMenuScreenView: View {
     let menu: RadioMenuState
 
-    private var rows: [RadioMenuRow] {
-        Array((menu.rows ?? []).prefix(4))
+    private var rows: [VisibleMemoryRow] {
+        visibleMemoryRows(menu.rows ?? [], selectedRow: menu.selectedRow)
     }
 
     var body: some View {
         VStack(spacing: 6) {
             MemoryMenuHeader(parentNum: menu.parentNum, title: compact(menu.title) ?? "MEMORY LIST")
-            ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+            ForEach(rows) { item in
                 MemoryRowView(
-                    num: compact(row.num) ?? "",
-                    primary: compact(row.freq) ?? compact(row.value) ?? "",
-                    secondary: compact(row.name) ?? compact(row.text) ?? "",
-                    selected: idx == (menu.selectedRow ?? 0)
+                    num: compact(item.row.num) ?? "",
+                    primary: compact(item.row.freq) ?? compact(item.row.value) ?? "",
+                    secondary: compact(item.row.name) ?? compact(item.row.text) ?? "",
+                    selected: item.index == (menu.selectedRow ?? 0)
                 )
             }
             Spacer(minLength: 0)
@@ -780,13 +857,12 @@ private struct MemoryListMenuScreenView: View {
 private struct MemorySelectMenuScreenView: View {
     let menu: RadioMenuState
 
-    private var rows: [RadioMenuRow] {
-        let values = menu.memoryRows ?? []
-        return Array(values.prefix(4))
+    private var rows: [VisibleMemoryRow] {
+        visibleMemoryRows(menu.memoryRows ?? [], selectedRow: menu.selectedMemoryRow, pageSize: 3)
     }
 
-    private var actions: [RadioMenuRow] {
-        Array((menu.rows ?? []).prefix(4))
+    private var actions: [VisibleMemoryRow] {
+        visibleMemoryRows(menu.rows ?? [], selectedRow: menu.selectedRow, pageSize: 5)
     }
 
     var body: some View {
@@ -794,12 +870,12 @@ private struct MemorySelectMenuScreenView: View {
             MemoryMenuHeader(parentNum: menu.parentNum, title: "MEMORY LIST")
 
             if !rows.isEmpty {
-                ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                ForEach(rows) { item in
                     MemoryRowView(
-                        num: compact(row.num) ?? "",
-                        primary: compact(row.freq) ?? compact(row.value) ?? "",
-                        secondary: compact(row.name) ?? compact(row.text) ?? "",
-                        selected: idx == (menu.selectedMemoryRow ?? 0)
+                        num: compact(item.row.num) ?? "",
+                        primary: compact(item.row.freq) ?? compact(item.row.value) ?? "",
+                        secondary: compact(item.row.name) ?? compact(item.row.text) ?? "",
+                        selected: item.index == (menu.selectedMemoryRow ?? 0)
                     )
                 }
             }
@@ -813,9 +889,9 @@ private struct MemorySelectMenuScreenView: View {
                             .lineLimit(1)
                     }
 
-                    ForEach(Array(actions.enumerated()), id: \.offset) { idx, row in
+                    ForEach(actions) { item in
                         HStack(spacing: 8) {
-                            Text(compact(row.label) ?? compact(row.text) ?? "")
+                            Text(compact(item.row.label) ?? compact(item.row.text) ?? "")
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .lineLimit(1)
                             Text("›")
@@ -827,7 +903,7 @@ private struct MemorySelectMenuScreenView: View {
                         .frame(maxWidth: .infinity, minHeight: 28)
                         .background(
                             RoundedRectangle(cornerRadius: 0, style: .continuous)
-                                .fill(idx == (menu.selectedRow ?? 0) ? Color.black.opacity(0.24) : Color.black.opacity(0.08))
+                                .fill(item.index == (menu.selectedRow ?? 0) ? Color.black.opacity(0.24) : Color.black.opacity(0.08))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 0, style: .continuous)
@@ -853,19 +929,19 @@ private struct MemorySelectMenuScreenView: View {
 private struct MemoryEditMenuScreenView: View {
     let menu: RadioMenuState
 
-    private var rows: [RadioMenuRow] {
-        Array((menu.rows ?? []).prefix(4))
+    private var rows: [VisibleMemoryRow] {
+        visibleMemoryRows(menu.rows ?? [], selectedRow: menu.selectedRow)
     }
 
     var body: some View {
         VStack(spacing: 6) {
             MemoryMenuHeader(parentNum: menu.parentNum, title: compact(menu.title) ?? "MEMORY EDIT")
-            ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+            ForEach(rows) { item in
                 HStack(spacing: 10) {
-                    Text(compact(row.label) ?? compact(row.text) ?? "")
+                    Text(compact(item.row.label) ?? compact(item.row.text) ?? "")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lineLimit(1)
-                    Text(compact(row.value) ?? "")
+                    Text(compact(item.row.value) ?? "")
                         .frame(maxWidth: 96, alignment: .trailing)
                         .lineLimit(1)
                     Text("›")
@@ -877,13 +953,195 @@ private struct MemoryEditMenuScreenView: View {
                 .frame(maxWidth: .infinity, minHeight: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 0, style: .continuous)
-                        .fill((idx == (menu.selectedRow ?? 0) || row.editing == true) ? Color.black.opacity(0.24) : Color.black.opacity(0.08))
+                        .fill((item.index == (menu.selectedRow ?? 0) || item.row.editing == true) ? Color.black.opacity(0.24) : Color.black.opacity(0.08))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 0, style: .continuous)
                         .stroke(AppTheme.menuBorder.opacity(0.82), lineWidth: 2)
                 )
             }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct MemoryFreqKeypadScreenView: View {
+    let menu: RadioMenuState
+
+    private var rows: [VisibleMemoryRow] {
+        visibleMemoryRows(menu.rows ?? [], selectedRow: menu.selectedRow, pageSize: 4)
+    }
+
+    private var labels: [String] {
+        let source = menu.keypad ?? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "DEL"]
+        return Array(source.prefix(11))
+    }
+
+    private var selectedKey: Int {
+        Int(menu.selectedKey ?? "") ?? -1
+    }
+
+    private var inputCells: [RadioMenuCell] {
+        if let cells = menu.inputCells, !cells.isEmpty {
+            return cells
+        }
+        let chars = Array((menu.inputValue ?? menu.currentValue ?? "").map(String.init))
+        return chars.enumerated().map { idx, text in
+            RadioMenuCell(index: idx, text: text, cursor: idx == (menu.inputCursorPos ?? 0))
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            MemoryMenuHeader(parentNum: menu.parentNum, title: compact(menu.title) ?? "MEMORY")
+
+            ForEach(rows) { item in
+                MemoryEditRowView(
+                    label: compact(item.row.label) ?? compact(item.row.text) ?? "",
+                    value: compact(item.row.value) ?? "",
+                    selected: item.index == (menu.selectedRow ?? 0) || item.row.editing == true
+                )
+            }
+
+            VStack(spacing: 7) {
+                Text(compact(menu.targetLabel) ?? "FREQ")
+                    .font(.system(size: 18, weight: .black, design: .rounded))
+                    .foregroundStyle(AppTheme.lcdText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+
+                HStack(spacing: 2) {
+                    ForEach(Array(inputCells.enumerated()), id: \.offset) { _, cell in
+                        MemoryFreqValueCell(
+                            text: compact(cell.text) ?? "",
+                            cursor: cell.cursor == true
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 0, style: .continuous)
+                        .stroke(AppTheme.menuBorder, lineWidth: 3)
+                )
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 5), spacing: 7) {
+                    ForEach(Array(labels.prefix(5).enumerated()), id: \.offset) { idx, label in
+                        MemoryPadKeyButton(label: label, selected: idx == selectedKey)
+                    }
+                }
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 5), spacing: 7) {
+                    ForEach(Array(labels.dropFirst(5).prefix(5).enumerated()), id: \.offset) { idx, label in
+                        MemoryPadKeyButton(label: label, selected: idx + 5 == selectedKey)
+                    }
+                }
+
+                HStack(spacing: 7) {
+                    ForEach(0 ..< 4, id: \.self) { _ in
+                        Color.clear
+                            .frame(maxWidth: .infinity, minHeight: 34)
+                    }
+                    MemoryPadKeyButton(label: labels.count > 10 ? labels[10] : "DEL", selected: selectedKey == 10)
+                }
+            }
+            .padding(.top, 2)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct MemoryTagKeypadScreenView: View {
+    let menu: RadioMenuState
+
+    private var rows: [VisibleMemoryRow] {
+        visibleMemoryRows(menu.rows ?? [], selectedRow: menu.selectedRow, pageSize: 4)
+    }
+
+    private var labels: [String] {
+        let fallbackAlphabetTop = Array("ABCDEFGHIJKLM").map { String($0) }
+        let fallbackAlphabetBottom = Array("NOPQRSTUVWXYZ").map { String($0) }
+        let fallback = fallbackAlphabetTop + fallbackAlphabetBottom + ["abc", "123", "#%^", "<-", "SPACE", "->", "DEL"]
+        let source = menu.keypad ?? fallback
+        return Array(source.prefix(33))
+    }
+
+    private var selectedKey: Int {
+        Int(menu.selectedKey ?? "") ?? -1
+    }
+
+    private var inputCells: [RadioMenuCell] {
+        if let cells = menu.inputCells, !cells.isEmpty {
+            return cells
+        }
+        let chars = Array((menu.inputValue ?? menu.currentValue ?? "").map(String.init))
+        return chars.enumerated().map { idx, text in
+            RadioMenuCell(index: idx, text: text, cursor: idx == (menu.inputCursorPos ?? 0))
+        }
+    }
+
+    private var keypadRows: [RadioMenuKeypadRow] {
+        if let rows = menu.keypadRows, !rows.isEmpty {
+            return rows
+        }
+        return [
+            RadioMenuKeypadRow(cls: "row13", idx: Array(0 ... 12)),
+            RadioMenuKeypadRow(cls: "row13", idx: Array(13 ... 25)),
+            RadioMenuKeypadRow(cls: "row7", idx: Array(26 ... 32)),
+        ]
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            MemoryMenuHeader(parentNum: menu.parentNum, title: compact(menu.title) ?? "MEMORY")
+
+            ForEach(rows) { item in
+                MemoryEditRowView(
+                    label: compact(item.row.label) ?? compact(item.row.text) ?? "",
+                    value: compact(item.row.value) ?? "",
+                    selected: item.index == (menu.selectedRow ?? 0) || item.row.editing == true
+                )
+            }
+
+            VStack(spacing: 7) {
+                Text(compact(menu.targetLabel) ?? "TAG")
+                    .font(.system(size: 18, weight: .black, design: .rounded))
+                    .foregroundStyle(AppTheme.lcdText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+
+                HStack(spacing: 2) {
+                    ForEach(Array(inputCells.enumerated()), id: \.offset) { _, cell in
+                        MemoryTagValueCell(
+                            text: compact(cell.text) ?? "",
+                            cursor: cell.cursor == true
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 0, style: .continuous)
+                        .stroke(AppTheme.menuBorder, lineWidth: 3)
+                )
+
+                VStack(spacing: 7) {
+                    ForEach(Array(keypadRows.enumerated()), id: \.offset) { _, row in
+                        MemoryTagKeyRow(
+                            labels: labels,
+                            selectedKey: selectedKey,
+                            row: row
+                        )
+                    }
+                }
+            }
+            .padding(.top, 2)
+
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1142,29 +1400,260 @@ private struct FullMenuScreenView: View {
     }
 }
 
-private struct QuickMenuScreenView: View {
+private struct SubmenuMenuScreenView: View {
     let menu: RadioMenuState
 
-    private var cells: [RadioMenuCell] {
-        var values = Array((menu.cells ?? []).prefix(9))
-        while values.count < 9 {
-            values.append(RadioMenuCell(index: values.count, text: ""))
+    private var rows: [RadioMenuRow] {
+        Array((menu.rows ?? []).prefix(3))
+    }
+
+    private var readOnly: Bool {
+        menu.readOnly == true
+    }
+
+    private var titleNum: String {
+        guard let parentNum = menu.parentNum else { return "" }
+        return String(format: "%02d", parentNum)
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 0) {
+                Text(titleNum)
+                    .frame(width: 60, alignment: .leading)
+                Text(compact(menu.title) ?? "")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                Text("")
+                    .frame(width: 18, alignment: .trailing)
+            }
+            .font(.system(size: 18, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .overlay(
+                RoundedRectangle(cornerRadius: 0, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: 3)
+            )
+            .opacity(0.95)
+
+            ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                let isSelected = !readOnly && menu.selectedRow == idx
+                let valueFocused = !readOnly && menu.editing == true && ((row.editing == true) || isSelected)
+                let keyFocused = isSelected && !valueFocused
+
+                SubmenuMenuRowView(
+                    keyText: compact(row.num) ?? "",
+                    valueText: compact(row.text) ?? compact(row.value) ?? "",
+                    keyFocused: keyFocused,
+                    valueFocused: valueFocused
+                )
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct Menu1KeypadScreenView: View {
+    let menu: RadioMenuState
+
+    private var labels: [String] {
+        let source = menu.keypad ?? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "MEM CH", "MEM LIST", "DEL"]
+        return Array(source.prefix(13))
+    }
+
+    private var selectedKey: Int {
+        max(-1, Int(menu.selectedKey ?? "") ?? -1)
+    }
+
+    private var titleText: String {
+        compact(menu.modeTitle) ?? compact(menu.title) ?? "FREQUENCY"
+    }
+
+    private var mode: String {
+        compact(menu.mode) ?? "frequency"
+    }
+
+    private var maxLen: Int {
+        max(1, menu.inputMaxLen ?? (mode == "memory" ? 3 : 8))
+    }
+
+    private var inputDigits: [String] {
+        let value = (menu.inputValue ?? "").filter(\.isNumber)
+        return Array(value.prefix(maxLen)).map(String.init)
+    }
+
+    private var cursorIndex: Int {
+        let fallback = min(inputDigits.count, max(0, maxLen - 1))
+        return max(0, min(menu.inputCursorPos ?? fallback, maxLen - 1))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(titleText)
+                .font(.system(size: 24, weight: .black, design: .rounded))
+                .foregroundStyle(AppTheme.lcdText)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 2) {
+                ForEach(Array((0 ..< maxLen).enumerated()), id: \.offset) { _, idx in
+                    Menu1InputCell(
+                        text: idx < inputDigits.count ? inputDigits[idx] : "",
+                        cursor: idx == cursorIndex && inputDigits.count < maxLen,
+                        groupAfter: mode != "memory" && idx == 2
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 42)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.white.opacity(0.05))
+            .overlay(
+                RoundedRectangle(cornerRadius: 0, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: 3)
+            )
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
+                ForEach(Array(labels.prefix(10).enumerated()), id: \.offset) { idx, label in
+                    Menu1KeyButton(label: label, selected: idx == selectedKey)
+                }
+            }
+
+            GeometryReader { proxy in
+                let totalWidth = max(proxy.size.width - 16, 0)
+                let unit = totalWidth / 4.2
+                let widths = [unit * 1.45, unit * 1.7, unit * 1.05]
+
+                HStack(spacing: 8) {
+                    ForEach(Array(labels.dropFirst(10).prefix(3).enumerated()), id: \.offset) { offset, label in
+                        Menu1KeyButton(label: label, selected: selectedKey == offset + 10, compactStyle: true)
+                            .frame(width: widths[offset])
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            }
+            .frame(height: 38)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct DTMFEditMenuScreenView: View {
+    let menu: RadioMenuState
+
+    private var entryCells: [String] {
+        var values = (menu.cells ?? []).map { compact($0.text) ?? "" }
+        if values.count > 16 {
+            values = Array(values.prefix(16))
+        }
+        while values.count < 16 {
+            values.append("")
+        }
+        return values
+    }
+
+    private var selectedKey: Int {
+        if let selected = Int(menu.selectedKey ?? "") {
+            return selected
+        }
+        return menu.cursorPos ?? -1
+    }
+
+    private var editCursorPos: Int {
+        menu.editCursorPos ?? -1
+    }
+
+    private var labels: [String] {
+        let source = menu.keypad ?? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "*", "#", "◀", "SP", "▶", "DEL"]
+        var values = Array(source.prefix(20))
+        while values.count < 20 {
+            values.append("")
         }
         return values
     }
 
     var body: some View {
+        VStack(spacing: 9) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 16), spacing: 2) {
+                ForEach(Array(entryCells.enumerated()), id: \.offset) { idx, text in
+                    DTMFEntryCell(
+                        text: text,
+                        cursor: idx == editCursorPos,
+                        cursorAfter: editCursorPos >= 16 && idx == 15
+                    )
+                }
+            }
+            .padding(.horizontal, 10)
+
+            VStack(spacing: 5) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 5), spacing: 4) {
+                    ForEach(Array(labels.prefix(5).enumerated()), id: \.offset) { idx, label in
+                        DTMFKeyButton(label: label, selected: idx == selectedKey)
+                    }
+                }
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 5), spacing: 4) {
+                    ForEach(Array(labels.dropFirst(5).prefix(5).enumerated()), id: \.offset) { idx, label in
+                        DTMFKeyButton(label: label, selected: idx + 5 == selectedKey)
+                    }
+                }
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 10), spacing: 4) {
+                    ForEach(Array(labels.dropFirst(10).prefix(10).enumerated()), id: \.offset) { idx, label in
+                        DTMFKeyButton(label: label, selected: idx + 10 == selectedKey, tool: idx + 10 >= 16)
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 5)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct QuickMenuScreenView: View {
+    let menu: RadioMenuState
+
+    private var cells: [RadioMenuCell] {
+        let source = Array((menu.cells ?? []).prefix(targetCellCount))
+        var values = source
+        while values.count < targetCellCount {
+            values.append(RadioMenuCell(index: values.count, text: ""))
+        }
+        return values
+    }
+
+    private var targetCellCount: Int {
+        let count = menu.cells?.count ?? 0
+        return count > 9 ? 12 : max(9, count)
+    }
+
+    private var columnCount: Int {
+        targetCellCount > 9 ? 4 : 3
+    }
+
+    var body: some View {
         VStack(spacing: 6) {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: columnCount), spacing: 4) {
                 ForEach(Array(cells.enumerated()), id: \.offset) { idx, cell in
                     let text = compact(cell.text) ?? ""
                     let isSelected = idx == (menu.selectedIndex ?? 0) && menu.footerSelected != true
                     Text(text)
-                        .font(.system(size: 15, weight: .black, design: .rounded))
+                        .font(.system(size: 19, weight: .black, design: .rounded))
                         .foregroundStyle(AppTheme.lcdText)
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.55)
+                        .minimumScaleFactor(0.45)
                         .padding(.horizontal, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 0, style: .continuous)
@@ -1178,21 +1667,23 @@ private struct QuickMenuScreenView: View {
                 }
             }
 
-            Text(compact(menu.footer) ?? "")
-                .font(.system(size: 22, weight: .black, design: .rounded))
-                .foregroundStyle(AppTheme.lcdText)
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .padding(.horizontal, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 0, style: .continuous)
-                        .fill(menu.footerSelected == true ? Color.black.opacity(0.28) : Color.clear)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 0, style: .continuous)
-                        .stroke(AppTheme.menuBorder, lineWidth: 3)
-                )
+            if let footer = compact(menu.footer) {
+                Text(footer)
+                    .font(.system(size: 19, weight: .black, design: .rounded))
+                    .foregroundStyle(AppTheme.lcdText)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .padding(.horizontal, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(menu.footerSelected == true ? Color.black.opacity(0.28) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(menu.footerSelected == true ? AppTheme.orangeBright.opacity(0.9) : AppTheme.menuBorder, lineWidth: menu.footerSelected == true ? 2 : 1.5)
+                    )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -1201,18 +1692,13 @@ private struct QuickMenuScreenView: View {
 private struct GenericMenuScreenView: View {
     let menu: RadioMenuState
 
-    private var selectedIndex: Int {
+    private var selectedIndex: Int? {
         let rows = menu.rows ?? []
-        return rows.firstIndex(where: isRowSelected) ?? 0
+        return rows.firstIndex(where: isRowSelected)
     }
 
-    private var visibleRows: [RadioMenuRow] {
-        let rows = menu.rows ?? []
-        guard !rows.isEmpty else { return [] }
-        let pageSize = 7
-        let start = max(0, min(max(selectedIndex - 3, 0), max(rows.count - pageSize, 0)))
-        let end = min(rows.count, start + pageSize)
-        return Array(rows[start ..< end])
+    private var visibleRows: [VisibleMenuRow] {
+        visibleMenuRows(menu.rows ?? [], selectedRow: selectedIndex, pageSize: 7)
     }
 
     private var visibleCells: [RadioMenuCell] {
@@ -1220,34 +1706,7 @@ private struct GenericMenuScreenView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(menu.title?.isEmpty == false ? menu.title ?? "" : "MENU")
-                        .font(.system(size: 22, weight: .black, design: .rounded))
-                        .foregroundStyle(AppTheme.lcdText)
-                        .lineLimit(2)
-
-                    HStack(spacing: 8) {
-                        if let category = compact(menu.category) {
-                            ScreenBadge(text: category)
-                        }
-                        if let type = compact(menu.type) {
-                            ScreenBadge(text: type.replacingOccurrences(of: "_", with: " ").uppercased())
-                        }
-                    }
-                }
-
-                Spacer(minLength: 0)
-
-                if let footer = compact(menu.footer) {
-                    Text(footer)
-                        .font(.system(size: 11, weight: .black, design: .rounded))
-                        .foregroundStyle(AppTheme.lcdText.opacity(0.74))
-                        .multilineTextAlignment(.trailing)
-                }
-            }
-
+        VStack(alignment: .leading, spacing: 8) {
             if let channels = menu.channels, !channels.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(channels) { channel in
@@ -1274,35 +1733,21 @@ private struct GenericMenuScreenView: View {
                     }
                 }
             } else if !visibleRows.isEmpty {
-                VStack(spacing: 7) {
-                    ForEach(visibleRows) { row in
+                VStack(spacing: 6) {
+                    ForEach(visibleRows) { item in
+                        let row = item.row
                         let selected = isRowSelected(row)
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(compact(row.num) ?? "")
-                                .frame(width: 40, alignment: .leading)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(rowPrimaryText(row))
-                                    .lineLimit(1)
-                                if let secondary = rowSecondaryText(row) {
-                                    Text(secondary)
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundStyle(selected ? AppTheme.lcdText.opacity(0.76) : AppTheme.lcdText.opacity(0.58))
-                                        .lineLimit(1)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            Text(compact(row.value) ?? "")
-                                .frame(maxWidth: 110, alignment: .trailing)
-                        }
-                        .font(.system(size: 15, weight: .black, design: .rounded))
-                        .foregroundStyle(selected ? AppTheme.orangeBright : .white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(selected ? AppTheme.menuSelectedFill : AppTheme.menuRowFill)
+                        let editing = row.editing == true
+                        let primary = rowPrimaryText(row)
+                        let secondary = rowSecondaryText(row)
+                        let trailingValue = menuRowTrailingValue(row, primaryText: primary, secondaryText: secondary)
+                        GenericMenuRowView(
+                            rowNum: compact(row.num) ?? "",
+                            primary: primary,
+                            secondary: secondary,
+                            trailingValue: trailingValue,
+                            selected: selected,
+                            editing: editing
                         )
                     }
                 }
@@ -1346,20 +1791,473 @@ private struct GenericMenuScreenView: View {
         if let selectedNum = menu.selectedNum, row.num == String(selectedNum) { return true }
         return false
     }
+}
 
-    private func compact(_ text: String?) -> String? {
-        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
+private struct SubmenuMenuRowView: View {
+    let keyText: String
+    let valueText: String
+    let keyFocused: Bool
+    let valueFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Text(keyText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 8)
+            .frame(width: 176, alignment: .leading)
+            .frame(maxHeight: .infinity, alignment: .leading)
+            .background(keyFocused ? Color.black.opacity(0.28) : Color.clear)
+
+            HStack(spacing: 0) {
+                Text(valueText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(valueFocused ? Color.black.opacity(0.28) : Color.clear)
+        }
+        .font(.system(size: 19, weight: .black, design: .rounded))
+        .foregroundStyle(AppTheme.lcdText)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .overlay(
+            RoundedRectangle(cornerRadius: 0, style: .continuous)
+                .stroke(AppTheme.menuBorder, lineWidth: 3)
+        )
+    }
+}
+
+private struct Menu1KeyButton: View {
+    let label: String
+    let selected: Bool
+    var compactStyle: Bool = false
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: compactStyle ? 16 : 22, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(
+                RoundedRectangle(cornerRadius: 0, style: .continuous)
+                    .fill(selected ? Color.black.opacity(0.30) : Color.white.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 0, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: 3)
+            )
+    }
+}
+
+private struct Menu1InputCell: View {
+    let text: String
+    let cursor: Bool
+    let groupAfter: Bool
+
+    var body: some View {
+        Text(text.isEmpty ? " " : text)
+            .font(.system(size: 28, weight: .black, design: .rounded))
+            .foregroundStyle(text.isEmpty ? AppTheme.lcdText.opacity(0.18) : AppTheme.lcdText)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .background(cursor ? Color.black.opacity(0.26) : Color.clear)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(cursor ? AppTheme.menuBorder.opacity(1) : AppTheme.menuBorder.opacity(0.72))
+                    .frame(height: 3)
+            }
+            .overlay(alignment: .bottom) {
+                if cursor {
+                    Triangle()
+                        .fill(AppTheme.menuBorder.opacity(0.9))
+                        .frame(width: 10, height: 6)
+                        .offset(y: 6)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if groupAfter {
+                    Text(".")
+                        .font(.system(size: 24, weight: .black, design: .rounded))
+                        .foregroundStyle(AppTheme.menuBorder.opacity(0.9))
+                        .offset(x: 7, y: -1)
+                }
+            }
+    }
+}
+
+private struct DTMFEntryCell: View {
+    let text: String
+    let cursor: Bool
+    let cursorAfter: Bool
+
+    var body: some View {
+        Text(displayText)
+            .font(.system(size: 25, weight: .black, design: .rounded))
+            .foregroundStyle(text.isEmpty ? Color.clear.opacity(0.38) : AppTheme.lcdText)
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .background(backgroundFill)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(cursor ? AppTheme.menuBorder.opacity(1) : AppTheme.menuBorder.opacity(0.72))
+                    .frame(height: 3)
+            }
+            .overlay(alignment: .bottom) {
+                if cursor {
+                    Triangle()
+                        .fill(AppTheme.menuBorder.opacity(0.9))
+                        .frame(width: 10, height: 6)
+                        .offset(y: 6)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if cursorAfter {
+                    Rectangle()
+                        .fill(AppTheme.menuBorder.opacity(0.9))
+                        .frame(width: 4)
+                        .padding(.vertical, 2)
+                }
+            }
     }
 
-    private func rowPrimaryText(_ row: RadioMenuRow) -> String {
-        compact(row.label) ?? compact(row.text) ?? compact(row.name) ?? compact(row.freq) ?? " "
+    private var displayText: String {
+        text == " " ? "\u{00A0}" : (text.isEmpty ? " " : text)
     }
 
-    private func rowSecondaryText(_ row: RadioMenuRow) -> String? {
-        let pieces = [compact(row.name), compact(row.freq)].compactMap { $0 }
-        let joined = pieces.joined(separator: " · ")
-        return joined.isEmpty || joined == rowPrimaryText(row) ? nil : joined
+    private var backgroundFill: Color {
+        if cursor {
+            return Color.black.opacity(0.30)
+        }
+        if text == " " {
+            return Color.black.opacity(0.12)
+        }
+        return .clear
+    }
+}
+
+private struct DTMFKeyButton: View {
+    let label: String
+    let selected: Bool
+    let tool: Bool
+
+    init(label: String, selected: Bool, tool: Bool = false) {
+        self.label = label
+        self.selected = selected
+        self.tool = tool
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: tool ? 18 : 23, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(maxWidth: .infinity, minHeight: 33)
+            .background(
+                RoundedRectangle(cornerRadius: 0, style: .continuous)
+                    .fill(selected ? Color.black.opacity(0.30) : Color.white.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 0, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: 3)
+            )
+    }
+}
+
+private struct MemoryEditRowView: View {
+    let label: String
+    let value: String
+    let selected: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+            Text(value)
+                .frame(maxWidth: 96, alignment: .trailing)
+                .lineLimit(1)
+            Text("›")
+                .frame(width: 12, alignment: .trailing)
+        }
+        .font(.system(size: 13, weight: .black, design: .rounded))
+        .foregroundStyle(AppTheme.lcdText)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, minHeight: 32)
+        .background(
+            RoundedRectangle(cornerRadius: 0, style: .continuous)
+                .fill(selected ? Color.black.opacity(0.24) : Color.black.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 0, style: .continuous)
+                .stroke(AppTheme.menuBorder.opacity(0.82), lineWidth: 2)
+        )
+    }
+}
+
+private struct MemoryFreqValueCell: View {
+    let text: String
+    let cursor: Bool
+
+    var body: some View {
+        Text(displayText)
+            .font(.system(size: 28, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(cursor ? Color.black.opacity(0.30) : Color.clear)
+    }
+
+    private var displayText: String {
+        text.isEmpty || text == " " ? "\u{00A0}" : text
+    }
+}
+
+private struct MemoryTagValueCell: View {
+    let text: String
+    let cursor: Bool
+
+    var body: some View {
+        Text(displayText)
+            .font(.system(size: 24, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .background(cursor ? Color.black.opacity(0.30) : Color.clear)
+    }
+
+    private var displayText: String {
+        text.isEmpty || text == " " ? "\u{00A0}" : text
+    }
+}
+
+private struct MemoryPadKeyButton: View {
+    let label: String
+    let selected: Bool
+    var compact: Bool = false
+    var blank: Bool = false
+
+    var body: some View {
+        Group {
+            if blank {
+                Color.clear
+                    .frame(maxWidth: .infinity, minHeight: 34)
+            } else {
+                Text(label)
+                    .font(.system(size: compact ? 18 : 22, weight: .black, design: .rounded))
+                    .foregroundStyle(AppTheme.lcdText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 0, style: .continuous)
+                            .fill(selected ? Color.black.opacity(0.30) : Color.white.opacity(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 0, style: .continuous)
+                            .stroke(AppTheme.menuBorder, lineWidth: 3)
+                    )
+            }
+        }
+    }
+}
+
+private struct MemoryTagKeyRow: View {
+    let labels: [String]
+    let selectedKey: Int
+    let row: RadioMenuKeypadRow
+
+    private var indexes: [Int] {
+        row.idx ?? []
+    }
+
+    private var columns: [GridItem] {
+        switch row.cls {
+        case "row13":
+            return Array(repeating: GridItem(.flexible(), spacing: 5), count: 13)
+        case "row12":
+            return Array(repeating: GridItem(.flexible(), spacing: 5), count: 12)
+        case "row11":
+            return Array(repeating: GridItem(.flexible(), spacing: 5), count: 11)
+        case "row10":
+            return Array(repeating: GridItem(.flexible(), spacing: 5), count: 10)
+        case "row7":
+            return [
+                GridItem(.flexible(minimum: 24), spacing: 5),
+                GridItem(.flexible(minimum: 24), spacing: 5),
+                GridItem(.flexible(minimum: 24), spacing: 5),
+                GridItem(.flexible(minimum: 18), spacing: 5),
+                GridItem(.flexible(minimum: 42), spacing: 5),
+                GridItem(.flexible(minimum: 18), spacing: 5),
+                GridItem(.flexible(minimum: 24), spacing: 5),
+            ]
+        case "row6":
+            return Array(repeating: GridItem(.flexible(), spacing: 5), count: 6)
+        default:
+            return Array(repeating: GridItem(.flexible(), spacing: 5), count: max(indexes.count, 1))
+        }
+    }
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 5) {
+            ForEach(indexes, id: \.self) { idx in
+                let label = idx < labels.count ? labels[idx] : ""
+                MemoryPadKeyButton(
+                    label: label,
+                    selected: idx == selectedKey,
+                    compact: true,
+                    blank: label.isEmpty
+                )
+            }
+        }
+    }
+}
+
+private struct FullMenuRowView: View {
+    let rowNum: String
+    let primary: String
+    let trailingValue: String?
+    let selected: Bool
+    let editing: Bool
+    let inert: Bool
+
+    private var leftActive: Bool {
+        selected && (!editing || trailingValue == nil)
+    }
+
+    private var rightActive: Bool {
+        editing && trailingValue != nil
+    }
+
+    private var rowNumWidth: CGFloat {
+        rowNum.isEmpty ? 0 : 16
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Text(rowNum)
+                    .frame(width: rowNumWidth, alignment: .leading)
+                    .minimumScaleFactor(0.6)
+
+                Text(primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text(inert ? "" : "›")
+                    .frame(width: 12, alignment: .trailing)
+            }
+            .font(.system(size: 18, weight: .black, design: .rounded))
+            .foregroundStyle(leftActive ? AppTheme.orangeBright : .white)
+            .padding(.leading, 8)
+            .padding(.trailing, 5)
+            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(leftActive ? AppTheme.menuSelectedFill : AppTheme.menuRowFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: 1.5)
+            )
+
+            if let trailingValue {
+                MenuRowValueBadge(text: trailingValue, active: rightActive)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 42)
+        .opacity(inert ? 0.72 : 1)
+    }
+}
+
+private struct GenericMenuRowView: View {
+    let rowNum: String
+    let primary: String
+    let secondary: String?
+    let trailingValue: String?
+    let selected: Bool
+    let editing: Bool
+
+    private var leftActive: Bool {
+        selected && (!editing || trailingValue == nil)
+    }
+
+    private var rightActive: Bool {
+        editing && trailingValue != nil
+    }
+
+    private var rowNumWidth: CGFloat {
+        if trailingValue != nil || rowNum.isEmpty {
+            return 0
+        }
+        return 14
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(rowNum)
+                    .frame(width: rowNumWidth, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    if let secondary {
+                        Text(secondary)
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(AppTheme.lcdText.opacity(leftActive ? 0.74 : 0.58))
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+            }
+            .font(.system(size: 19, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .frame(maxWidth: .infinity, minHeight: secondary == nil ? 40 : 44, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(leftActive ? Color.black.opacity(0.28) : AppTheme.menuRowFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: leftActive ? 3 : 1.2)
+            )
+
+            if let trailingValue {
+                MenuRowValueBadge(text: trailingValue, active: rightActive)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: secondary == nil ? 40 : 44)
+    }
+}
+
+private struct MenuRowValueBadge: View {
+    let text: String
+    let active: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 19, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .frame(minHeight: 40)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(active ? Color.black.opacity(0.28) : AppTheme.menuRowFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(AppTheme.menuBorder, lineWidth: active ? 3 : 1.2)
+            )
     }
 }
 
@@ -1381,6 +2279,29 @@ private struct LCDMenuBadge: View {
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
                             .fill(Color.black.opacity(0.08))
                     )
+            )
+    }
+}
+
+private struct LCDStatusBadge: View {
+    let text: String
+    var minWidth: CGFloat = 0
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .black, design: .rounded))
+            .foregroundStyle(AppTheme.lcdText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .padding(.horizontal, 10)
+            .frame(minWidth: minWidth, minHeight: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.black.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(AppTheme.menuBorder.opacity(0.56), lineWidth: 1.5)
             )
     }
 }
@@ -1566,6 +2487,52 @@ private func compact(_ text: String?) -> String? {
     return trimmed.isEmpty ? nil : trimmed
 }
 
+private struct VisibleMemoryRow: Identifiable {
+    let index: Int
+    let row: RadioMenuRow
+
+    var id: String {
+        "\(index)-\(row.id)"
+    }
+}
+
+private struct VisibleMenuRow: Identifiable {
+    let index: Int
+    let row: RadioMenuRow
+
+    var id: String {
+        "\(index)-\(row.id)"
+    }
+}
+
+private func visibleMemoryRows(_ rows: [RadioMenuRow], selectedRow: Int?, pageSize: Int = 6) -> [VisibleMemoryRow] {
+    guard rows.count > pageSize else {
+        return rows.enumerated().map { index, row in
+            VisibleMemoryRow(index: index, row: row)
+        }
+    }
+    let selected = max(0, min(selectedRow ?? 0, rows.count - 1))
+    let start = max(0, min(max(selected - (pageSize / 2), 0), rows.count - pageSize))
+    let end = min(rows.count, start + pageSize)
+    return Array(rows[start ..< end].enumerated()).map { offset, row in
+        VisibleMemoryRow(index: start + offset, row: row)
+    }
+}
+
+private func visibleMenuRows(_ rows: [RadioMenuRow], selectedRow: Int?, pageSize: Int) -> [VisibleMenuRow] {
+    guard rows.count > pageSize else {
+        return rows.enumerated().map { index, row in
+            VisibleMenuRow(index: index, row: row)
+        }
+    }
+    let selected = max(0, min(selectedRow ?? 0, rows.count - 1))
+    let start = max(0, min(max(selected - (pageSize / 2), 0), rows.count - pageSize))
+    let end = min(rows.count, start + pageSize)
+    return Array(rows[start ..< end].enumerated()).map { offset, row in
+        VisibleMenuRow(index: start + offset, row: row)
+    }
+}
+
 private func formattedMenuNum(_ raw: String?) -> String {
     guard let raw = compact(raw) else { return "" }
     if let value = Int(raw) {
@@ -1589,6 +2556,34 @@ private func rowSecondaryText(_ row: RadioMenuRow) -> String? {
     let pieces = [compact(row.name), compact(row.freq)].compactMap { $0 }
     let joined = pieces.joined(separator: " · ")
     return joined.isEmpty || joined == rowPrimaryText(row) ? nil : joined
+}
+
+private func menuRowTrailingValue(
+    _ row: RadioMenuRow,
+    primaryText: String,
+    secondaryText: String?,
+    currentValue: String? = nil,
+    suppressBecauseValuePanel: Bool = false
+) -> String? {
+    guard !suppressBecauseValuePanel, let value = compact(row.value) else { return nil }
+    let comparableValue = comparableMenuText(value)
+    guard !comparableValue.isEmpty else { return nil }
+
+    let comparableTexts = [primaryText, secondaryText, currentValue]
+        .compactMap { $0 }
+        .map(comparableMenuText)
+
+    let duplicated = comparableTexts.contains { text in
+        !text.isEmpty && (text == comparableValue || text.contains(comparableValue) || comparableValue.contains(text))
+    }
+    return duplicated ? nil : value
+}
+
+private func comparableMenuText(_ text: String) -> String {
+    text
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .uppercased()
+        .replacingOccurrences(of: " ", with: "")
 }
 
 private struct InlineKnobStrip: View {
@@ -1786,7 +2781,13 @@ private struct MiniHoldButton: View {
                 .overlay(Circle().stroke(AppTheme.buttonStroke, lineWidth: 1))
                 .overlay(
                     Circle()
-                        .fill(Color.black.opacity(0.75))
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.98), Color.white.opacity(0.72)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                         .frame(width: 10, height: 10)
                 )
         }
@@ -1868,11 +2869,22 @@ private struct DisplayTag: View {
             .font(.system(size: compact ? 12 : 13, weight: .black, design: .rounded))
             .foregroundStyle(AppTheme.orangeBright)
             .padding(.horizontal, compact ? 8 : 10)
-            .frame(minHeight: compact ? 24 : 28)
+            .frame(minHeight: 28)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(AppTheme.tagFill)
             )
+    }
+}
+
+private extension RadioMenuState {
+    var isMemoryMenu: Bool {
+        switch type {
+        case "memory_list", "memory_select", "memory_edit", "memory_freq_keypad", "memory_tag_keypad":
+            return true
+        default:
+            return false
+        }
     }
 }
 

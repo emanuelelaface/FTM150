@@ -110,10 +110,12 @@ struct RadioMenuState: Codable, Equatable {
     var ageS: Double?
     var title: String?
     var parentNum: Int?
+    var readOnly: Bool?
     var category: String?
     var selectedRow: Int?
     var selectedIndex: Int?
     var selectedNum: Int?
+    var selectedKey: String?
     var selected: Int?
     var footer: String?
     var footerSelected: Bool?
@@ -126,16 +128,27 @@ struct RadioMenuState: Codable, Equatable {
     var noActionItems: [Int]?
     var rows: [RadioMenuRow]?
     var cells: [RadioMenuCell]?
+    var keypad: [String]?
     var channels: [RadioPMGChannel]?
     var memoryRows: [RadioMenuRow]?
     var selectedMemoryRow: Int?
     var memoryNum: Int?
     var memoryFreq: String?
     var memoryName: String?
+    var currentValue: String?
+    var inputCells: [RadioMenuCell]?
+    var targetLabel: String?
+    var keypadRows: [RadioMenuKeypadRow]?
     var channelCount: Int?
     var source: String?
     var freq: String?
     var mode: String?
+    var modeTitle: String?
+    var inputValue: String?
+    var inputMaxLen: Int?
+    var inputCursorPos: Int?
+    var cursorPos: Int?
+    var editCursorPos: Int?
     var rxMode: String?
     var shift: String?
     var tone: String?
@@ -155,10 +168,12 @@ struct RadioMenuState: Codable, Equatable {
         case ageS
         case title
         case parentNum
+        case readOnly
         case category
         case selectedRow
         case selectedIndex
         case selectedNum
+        case selectedKey
         case selected
         case footer
         case footerSelected
@@ -171,15 +186,26 @@ struct RadioMenuState: Codable, Equatable {
         case noActionItems
         case rows
         case cells
+        case keypad
         case channels
         case memoryRows
         case selectedMemoryRow
         case memoryNum
         case memoryFreq
         case memoryName
+        case currentValue
+        case inputCells
+        case targetLabel
+        case keypadRows
         case source
         case freq
         case mode
+        case modeTitle
+        case inputValue
+        case inputMaxLen
+        case inputCursorPos
+        case cursorPos
+        case editCursorPos
         case rxMode
         case shift
         case tone
@@ -201,10 +227,18 @@ struct RadioMenuState: Codable, Equatable {
         ageS = try container.decodeIfPresent(Double.self, forKey: .ageS)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         parentNum = try container.decodeIfPresent(Int.self, forKey: .parentNum)
+        readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly)
         category = try container.decodeIfPresent(String.self, forKey: .category)
         selectedRow = try container.decodeIfPresent(Int.self, forKey: .selectedRow)
         selectedIndex = try container.decodeIfPresent(Int.self, forKey: .selectedIndex)
         selectedNum = try container.decodeIfPresent(Int.self, forKey: .selectedNum)
+        if let stringValue = try? container.decode(String.self, forKey: .selectedKey) {
+            selectedKey = stringValue
+        } else if let intValue = try? container.decode(Int.self, forKey: .selectedKey) {
+            selectedKey = String(intValue)
+        } else {
+            selectedKey = nil
+        }
         selected = try container.decodeIfPresent(Int.self, forKey: .selected)
         footer = try container.decodeIfPresent(String.self, forKey: .footer)
         footerSelected = try container.decodeIfPresent(Bool.self, forKey: .footerSelected)
@@ -217,6 +251,7 @@ struct RadioMenuState: Codable, Equatable {
         noActionItems = try container.decodeIfPresent([Int].self, forKey: .noActionItems)
         rows = try container.decodeIfPresent([RadioMenuRow].self, forKey: .rows)
         cells = try container.decodeIfPresent([RadioMenuCell].self, forKey: .cells)
+        keypad = try container.decodeIfPresent([String].self, forKey: .keypad)
         if let pmgChannels = try? container.decode([RadioPMGChannel].self, forKey: .channels) {
             channels = pmgChannels
             channelCount = pmgChannels.count
@@ -229,9 +264,19 @@ struct RadioMenuState: Codable, Equatable {
         memoryNum = try container.decodeIfPresent(Int.self, forKey: .memoryNum)
         memoryFreq = try container.decodeIfPresent(String.self, forKey: .memoryFreq)
         memoryName = try container.decodeIfPresent(String.self, forKey: .memoryName)
+        currentValue = try container.decodeIfPresent(String.self, forKey: .currentValue)
+        inputCells = try container.decodeIfPresent([RadioMenuCell].self, forKey: .inputCells)
+        targetLabel = try container.decodeIfPresent(String.self, forKey: .targetLabel)
+        keypadRows = try container.decodeIfPresent([RadioMenuKeypadRow].self, forKey: .keypadRows)
         source = try container.decodeIfPresent(String.self, forKey: .source)
         freq = try container.decodeIfPresent(String.self, forKey: .freq)
         mode = try container.decodeIfPresent(String.self, forKey: .mode)
+        modeTitle = try container.decodeIfPresent(String.self, forKey: .modeTitle)
+        inputValue = try container.decodeIfPresent(String.self, forKey: .inputValue)
+        inputMaxLen = try container.decodeIfPresent(Int.self, forKey: .inputMaxLen)
+        inputCursorPos = try container.decodeIfPresent(Int.self, forKey: .inputCursorPos)
+        cursorPos = try container.decodeIfPresent(Int.self, forKey: .cursorPos)
+        editCursorPos = try container.decodeIfPresent(Int.self, forKey: .editCursorPos)
         rxMode = try container.decodeIfPresent(String.self, forKey: .rxMode)
         shift = try container.decodeIfPresent(String.self, forKey: .shift)
         tone = try container.decodeIfPresent(String.self, forKey: .tone)
@@ -316,6 +361,47 @@ struct RadioMenuCell: Codable, Equatable, Identifiable {
     var id: Int { index ?? 0 }
     var index: Int?
     var text: String?
+    var cursor: Bool?
+
+    init(index: Int? = nil, text: String? = nil, cursor: Bool? = nil) {
+        self.index = index
+        self.text = text
+        self.cursor = cursor
+    }
+
+    init(from decoder: Decoder) throws {
+        if let singleValue = try? decoder.singleValueContainer() {
+            if let text = try? singleValue.decode(String.self) {
+                self.index = nil
+                self.text = text
+                self.cursor = nil
+                return
+            }
+            if let intValue = try? singleValue.decode(Int.self) {
+                self.index = intValue
+                self.text = String(intValue)
+                self.cursor = nil
+                return
+            }
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        index = try container.decodeIfPresent(Int.self, forKey: .index)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        cursor = try container.decodeIfPresent(Bool.self, forKey: .cursor)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case text
+        case cursor
+    }
+}
+
+struct RadioMenuKeypadRow: Codable, Equatable, Identifiable {
+    var id: String { cls ?? UUID().uuidString }
+    var cls: String?
+    var idx: [Int]?
 }
 
 struct RadioPMGChannel: Codable, Equatable, Identifiable {

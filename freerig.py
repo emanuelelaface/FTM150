@@ -38,7 +38,7 @@ try:
 except ModuleNotFoundError:
     pigpio = None  # required only for GPIO power-on replay
 
-BUILD_ID = "v111-pmg-latched-render-20260512"
+BUILD_ID = "v114-menu1-inputbar-20260513"
 BAUD = 500000
 TX_FRAME_LEN = 210
 RX_FRAME_LEN = 1100
@@ -470,7 +470,7 @@ class BodyRx:
         Initially we only split out f1 60, but field captures showed that some
         menu/scope pages arrive as f1 21 and otherwise look like the normal
         display path. Classify by:
-          - known screen-type byte at +1: 0x60, 0x21, 0x23, 0x25 or 0x29
+          - known screen-type byte at +1: 0x60, 0x21, 0x22, 0x23, 0x25 or 0x29
           - or menu-like labels in the menu text area +60..+150
 
         This keeps display/decode focused on the dual-frequency screen while
@@ -480,7 +480,7 @@ class BodyRx:
         """
         if len(frame) < RX_BLOCK_LEN or frame[0] not in (0xF1, 0xF3):
             return False
-        if (frame[0], frame[1]) in ((0xF1, 0x60), (0xF1, 0x21), (0xF1, 0x23), (0xF1, 0x25), (0xF1, 0x29), (0xF3, 0x20)):
+        if (frame[0], frame[1]) in ((0xF1, 0x60), (0xF1, 0x21), (0xF1, 0x22), (0xF1, 0x23), (0xF1, 0x25), (0xF1, 0x29), (0xF3, 0x20)):
             return True
 
         # Conservative content fallback: menu pages contain these labels in the
@@ -2886,8 +2886,15 @@ WEB_HTML = r'''<!doctype html>
   .memory-freq-key.sel { background:rgba(0,0,0,.30); box-shadow:inset 0 0 0 999px rgba(0,0,0,.04); }
   .memory-freq-key.blank { visibility:hidden; pointer-events:none; }
   .menu1-overlay { position:absolute; z-index:8; left:50%; top:52%; transform:translate(-50%,-50%); width:min(440px,94%); padding:14px 16px; border:4px solid rgba(35,30,25,.88); background:rgba(216,90,32,.96); box-shadow:0 0 0 3px rgba(35,30,25,.20), 0 12px 24px rgba(0,0,0,.26), inset 0 0 12px rgba(0,0,0,.16); color:var(--lcdText); font-weight:950; }
-  .menu1-title { font-size:24px; line-height:1; margin-bottom:12px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; gap:12px; align-items:baseline; }
-  .menu1-title .menu1-input { font-size:.88em; opacity:.96; letter-spacing:1px; }
+  .menu1-title { font-size:24px; line-height:1; margin-bottom:8px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .menu1-inputbar { min-height:42px; margin-bottom:12px; border:3px solid rgba(35,30,25,.78); display:grid; gap:2px; align-items:center; justify-content:center; padding:3px 6px; background:rgba(255,255,255,.05); }
+  .menu1-inputbar.freq { grid-template-columns:repeat(8,1fr); }
+  .menu1-inputbar.mem { grid-template-columns:repeat(3,1fr); }
+  .menu1-input-cell { position:relative; min-width:28px; min-height:32px; display:flex; align-items:center; justify-content:center; font-size:28px; line-height:1; border-bottom:3px solid rgba(35,30,25,.72); }
+  .menu1-input-cell.empty { color:transparent; opacity:.42; }
+  .menu1-input-cell.cursor { background:rgba(0,0,0,.26); box-shadow:inset 0 0 0 2px rgba(35,30,25,.42); border-bottom-color:rgba(35,30,25,1); }
+  .menu1-input-cell.cursor:after { content:""; position:absolute; left:50%; bottom:-7px; transform:translateX(-50%); width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-bottom:6px solid rgba(35,30,25,.9); }
+  .menu1-input-cell.group-after:before { content:"."; position:absolute; right:-7px; top:50%; transform:translateY(-52%); color:rgba(35,30,25,.90); font-size:24px; }
   .menu1-keys { display:flex; flex-direction:column; gap:8px; }
   .menu1-row { display:grid; gap:8px; }
   .menu1-row.row5 { grid-template-columns:repeat(5,1fr); }
@@ -3884,9 +3891,21 @@ function renderMenu(menu){
     const r1=labels.slice(0,5).map((x,i)=>keyHtml(x,i)).join('');
     const r2=labels.slice(5,10).map((x,i)=>keyHtml(x,i+5)).join('');
     const r3=labels.slice(10,13).map((x,i)=>keyHtml(x,i+10,'wide')).join('');
-    const input=String(menu.input_value||'');
-    const title=`<span>${esc(menu.mode_title||menu.title||'FREQUENCY')}</span>${input?`<span class="menu1-input">${esc(input)}</span>`:''}`;
-    const overlay=`<div class="menu1-overlay"><div class="menu1-title">${title}</div><div class="menu1-keys"><div class="menu1-row row5">${r1}</div><div class="menu1-row row5">${r2}</div><div class="menu1-row row3">${r3}</div></div></div>`;
+    const mode=String(menu.mode||'frequency');
+    const maxLen=(mode==='memory')?3:8;
+    const input=String(menu.input_value||'').replace(/[^0-9]/g,'').slice(0,maxLen);
+    const cursor=Math.min(input.length,maxLen-1);
+    const cells=Array.from({length:maxLen},(_,idx)=>{
+      const ch=input[idx]||'';
+      const cls=['menu1-input-cell'];
+      if(ch==='') cls.push('empty');
+      if(idx===cursor && input.length<maxLen) cls.push('cursor');
+      if(mode!=='memory' && idx===2) cls.push('group-after');
+      return `<span class="${cls.join(' ')}">${ch?esc(ch):'&nbsp;'}</span>`;
+    }).join('');
+    const title=esc(menu.mode_title||menu.title||'FREQUENCY');
+    const inputCls=(mode==='memory')?'mem':'freq';
+    const overlay=`<div class="menu1-overlay"><div class="menu1-title">${title}</div><div class="menu1-inputbar ${inputCls}">${cells}</div><div class="menu1-keys"><div class="menu1-row row5">${r1}</div><div class="menu1-row row5">${r2}</div><div class="menu1-row row3">${r3}</div></div></div>`;
     screen.innerHTML=overlay;
     return;
   }
@@ -7094,6 +7113,7 @@ def _menu1_keypad_state_from_frame(menu_frame: Optional[bytes], age: float) -> O
         "category": _setup_category(1),
         "selected_key": int(selected),
         "keypad": labels,
+        "input_max_len": 3 if mode == "memory" else 8,
         "editing": True,
         "raw_value": "+0012 +0160..+0176: " + f"{int(menu_frame[12]):02x} / " + menu_frame[160:177].hex(" "),
     }
@@ -7118,12 +7138,13 @@ def _menu32_dtmf_edit_state_from_frame(menu_frame: Optional[bytes], age: float) 
         return None
     if not (menu_frame[0] == 0xF3 and menu_frame[1] == 0x20):
         return None
-    # Avoid collision with ordinary setup/secondary-display F3 20 frames.  The
-    # real menu-32 DTMF edit page from save_20260506_092456_menu32-sub has
-    # +0006=01 and +0012=06.  The broken menu-1 dump has F3 20 frames with the
-    # same CA/20/40 cursor pattern but +0006=00/+0012=00, so they must not be
-    # decoded as DTMF edit.
-    if not (len(menu_frame) > 13 and int(menu_frame[6]) == 0x01 and int(menu_frame[12]) == 0x06):
+    # Avoid collision with ordinary setup/secondary-display F3 20 frames.
+    # Menu-32 DTMF edit frames are identified by the menu-32 subpage marker
+    # +0012=0x06 plus the edit-cell/keypad signatures below.  New captures
+    # show +0006 can be either 0x00 or 0x01, so do not require +0006=0x01.
+    # The broken menu-1 F3 20 dump has the same CA/20/40 cursor pattern but
+    # +0012=0x00, so the +0012 guard keeps it out of the DTMF edit decoder.
+    if not (len(menu_frame) > 13 and int(menu_frame[12]) == 0x06):
         return None
     edit_cells = menu_frame[20:36]
     cursor_area = menu_frame[160:180]
@@ -9275,10 +9296,15 @@ class WebContext:
                 pass
         elif menu.get("type") == "menu1_keypad":
             mode = str(menu.get("mode") or "frequency")
+            max_len = 3 if mode == "memory" else 8
             try:
-                menu["input_value"] = str((self.menu1_inputs or {}).get(mode, ""))
+                val = re.sub(r"\D", "", str((self.menu1_inputs or {}).get(mode, "")))[:max_len]
             except Exception:
-                menu["input_value"] = ""
+                val = ""
+            menu["input_value"] = val
+            menu["input_max_len"] = max_len
+            menu["input_cursor_pos"] = min(len(val), max(0, max_len - 1))
+            menu["input_cells"] = list(val) + [""] * max(0, max_len - len(val))
         elif menu.get("type") == "memory_freq_keypad":
             menu = self._stabilize_memory_freq_keypad_cursor(menu)
             self.last_memory_tag_cells = None
