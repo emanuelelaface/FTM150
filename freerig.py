@@ -38,7 +38,7 @@ try:
 except ModuleNotFoundError:
     pigpio = None  # required only for GPIO power-on replay
 
-BUILD_ID = "v115-card1-audio-20260514"
+BUILD_ID = "Build 2026051501"
 BAUD = 500000
 TX_FRAME_LEN = 210
 RX_FRAME_LEN = 1100
@@ -10148,17 +10148,17 @@ def web_main() -> int:
     ap.add_argument("--ssl-cert", default=None, help="TLS PEM certificate to enable HTTPS/WSS")
     ap.add_argument("--ssl-key", default=None, help="TLS PEM key to enable HTTPS/WSS")
     ap.add_argument("--no-audio", action="store_true", help="disable RX audio streaming in the browser")
-    ap.add_argument("--audio-device", default="plughw:1,0", help="RX capture ALSA device; default plughw:1,0 = USB Audio card 1")
+    ap.add_argument("--audio-device", default="plughw:CARD=FreeRIG,DEV=0", help="RX capture ALSA device")
     ap.add_argument("--audio-rate", type=int, default=48000, help="RX PCM audio sample rate toward the browser")
     ap.add_argument("--audio-chunk-ms", type=int, default=10, help="RX HTTP audio chunk size in milliseconds")
     ap.add_argument("--audio-buffer-time", type=int, default=50000, help="ALSA RX buffer-time in microseconds")
     ap.add_argument("--audio-period-time", type=int, default=10000, help="ALSA RX period-time in microseconds")
-    ap.add_argument("--rx-alsa-card", default="1", help="ALSA card used to configure Mic/AGC for RX capture, default 1")
+    ap.add_argument("--rx-alsa-card", default="FreeRIG", help="ALSA card used to configure Mic/AGC for RX capture")
     ap.add_argument("--rx-alsa-mic-volume", type=int, default=45, help="set the ALSA 'Mic' mixer to this percentage when RX audio starts, default 45")
     ap.add_argument("--rx-alsa-agc-off", action="store_true", default=True, help="turn off the ALSA 'Auto Gain Control' control when RX audio starts; default enabled")
     ap.add_argument("--rx-alsa-agc-on", dest="rx_alsa_agc_off", action="store_false", help="leave the ALSA 'Auto Gain Control' control enabled for RX capture")
     ap.add_argument("--no-tx-audio", action="store_true", help="disable TX audio from the browser microphone")
-    ap.add_argument("--tx-audio-device", default="plughw:1,0", help="TX playback ALSA device; default plughw:1,0 = USB Audio card 1")
+    ap.add_argument("--tx-audio-device", default="plughw:CARD=FreeRIG,DEV=0", help="TX playback ALSA device")
     ap.add_argument("--tx-audio-rate", type=int, default=48000, help="TX PCM audio sample rate from the browser toward the CM108")
     ap.add_argument("--tx-playback-channels", type=int, choices=(1, 2), default=2, help="TX playback ALSA channels; default 2 duplicates browser mono to L+R")
     ap.add_argument("--tx-aplay-verbose", action="store_true", help="enable verbose aplay output in GUI diagnostics")
@@ -10168,7 +10168,7 @@ def web_main() -> int:
     ap.add_argument("--tx-agc", action="store_true", help="enable Raspberry-side TX AGC/normalization; disabled by default to avoid distortion")
     ap.add_argument("--tx-agc-target", type=float, default=0.60, help="TX AGC target peak, 0.60 = anti-distortion headroom")
     ap.add_argument("--tx-agc-max-boost", type=float, default=10.0, help="maximum Raspberry-side TX AGC boost")
-    ap.add_argument("--tx-alsa-card", default="1", help="ALSA card used to configure Speaker, default 1")
+    ap.add_argument("--tx-alsa-card", default="FreeRIG", help="ALSA card used to configure Speaker")
     ap.add_argument("--tx-alsa-speaker-volume", type=int, default=90, help="set the ALSA 'Speaker' mixer to this percentage when TX starts, default 90")
     ap.add_argument("--tx-ptt-lead-ms", type=int, default=120, help="delay between PTT ON and microphone audio transmission")
     ap.add_argument("--tx-ptt-tail-ms", type=int, default=80, help="silent tail before releasing PTT")
@@ -10176,8 +10176,8 @@ def web_main() -> int:
     ap.add_argument("--cm108-hidraw", default="auto", help="/dev/hidrawN for the CM108/CM119; default is auto based on --tx-audio-device")
     ap.add_argument("--cm108-gpio", type=int, default=3, help="CM108/CM119 GPIO used for PTT; typical AllStar/Direwolf = 3")
     ap.add_argument("--cm108-ptt-invert", action="store_true", help="invert HID GPIO logic if your interface requires 0 to transmit")
-    ap.add_argument("--power-gpio", type=int, default=18, help="BCM GPIO that replays CH2/pin6 to power on the radio; default 18")
-    ap.add_argument("--uart-select-gpio", type=int, default=23, help="BCM GPIO wired to S on the 74LVC157A: LOW=GPIO replay, HIGH=USB TX; default 23")
+    ap.add_argument("--power-gpio", type=int, default=27, help="BCM GPIO that replays CH2/pin6 to power on the radio; default 18")
+    ap.add_argument("--uart-select-gpio", type=int, default=17, help="BCM GPIO wired to S on the 74LVC157A: LOW=GPIO replay, HIGH=USB TX; default 23")
     ap.add_argument("--radio-start-on", action="store_true", help="initial hint: start the GUI as if the radio were already on; the RX watchdog will decide afterward")
     ap.add_argument("--rx-power-timeout", type=float, default=1.2, help="seconds without valid RX frames before considering the radio off; default 1.2")
     args = ap.parse_args()
